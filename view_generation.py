@@ -54,27 +54,35 @@ def classify_angle(angle, offset):
 
 offset = 15
 views = generate_random_coordinates(500)
+view_list = []
+for view in views:
 
-view_cat_num = {}
-for t_0 in ['A','B','C','D', 'E']:
-    for t_1 in ['A','B','C','D', 'E']:
-        for t_2 in ['A','B','C','D', 'E']:
-            view_cat_num[t_0+t_1+t_2] = 0
-view_cat_num['non-planar'] = 0
+    view_list.append(view[0])
+    view_list.append(view[1])
+    view_list.append(view[2])
+    
+print(view_list)
+# print(views)
+# view_cat_num = {}
+# for t_0 in ['A','B','C','D', 'E']:
+#     for t_1 in ['A','B','C','D', 'E']:
+#         for t_2 in ['A','B','C','D', 'E']:
+#             view_cat_num[t_0+t_1+t_2] = 0
+# view_cat_num['non-planar'] = 0
 
-view_dict = {}
-cat_list = []
-for i, view in enumerate(views):
-    cat_0 = classify_angle(view[0], offset)
-    cat_1 = classify_angle(view[1], offset)
-    cat_2 = classify_angle(view[2], offset)
+# view_dict = {}
+# cat_list = []
+# for i, view in enumerate(views):
+#     cat_0 = classify_angle(view[0], offset)
+#     cat_1 = classify_angle(view[1], offset)
+#     cat_2 = classify_angle(view[2], offset)
 
-    if cat_0 != 'E' or cat_1 != 'E' or cat_2 != 'E':
-        view_cat_num[cat_0+cat_1+cat_2] += 1
-        cat_list.append(cat_0+cat_1+cat_2)
-    else:
-        view_cat_num['non-planar'] += 1
-        cat_list.append('non-planar')
+#     if cat_0 != 'E' or cat_1 != 'E' or cat_2 != 'E':
+#         view_cat_num[cat_0+cat_1+cat_2] += 1
+#         cat_list.append(cat_0+cat_1+cat_2)
+#     else:
+#         view_cat_num['non-planar'] += 1
+#         cat_list.append('non-planar')
 
 
 

@@ -40,7 +40,9 @@ def save_features_for_folder(input_folder, output_folder, model, device, batch_s
     image_paths = []
     for root, _, files in os.walk(input_folder):
         for file in files:
-            if file.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tiff")):
+            if file.lower().endswith((".jpg")):
+                print('root', root)
+                print('file', file)
                 image_paths.append(os.path.join(root, file))
     
     dataset = ImageDataset(image_paths, transform)
@@ -60,8 +62,8 @@ def save_features_for_folder(input_folder, output_folder, model, device, batch_s
             torch.save(feature.cpu(), save_path)
 
 if __name__ == "__main__":
-    input_folder = "path/to/your/images"
-    output_folder = "path/to/save/features"
+    input_folder = "/N/project/ego4d_vlm/ShapeNet"
+    output_folder = "/N/project/ego4d_vlm/ShapeNet/feature"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = get_resnet50_model().to(device)
-    save_features_for_folder(input_folder, output_folder, model, device, batch_size=32)
+    save_features_for_folder(input_folder, output_folder, model, device, batch_size=64)
