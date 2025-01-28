@@ -68,7 +68,7 @@ def load_feature_paths_with_view(data_folder, split='train', view='random'):
             for _, _, files in os.walk(instances_path):
                 for file in files:
                     if file.endswith(".pt"):
-                        if 'E' in file:
+                        if not 'EEE' in file:
                             feature_paths_planar[class_name].append(os.path.join(instances_path, file))
                         else:
                             feature_paths_non_planar[class_name].append(os.path.join(instances_path, file))
@@ -109,7 +109,7 @@ def train_few_shot(train_feature_paths, \
     test_sampled_paths = []
     test_sampled_labels = []
     for run in range(num_runs):
-        if args.view_ratio == 0.0:
+        if args.view == 'random':
             for class_name, path_list in train_feature_paths.items():
                 sampled_indices = random.sample(range(len(path_list)), shot)
                 sampled_paths = [path_list[i] for i in sampled_indices]
@@ -195,13 +195,13 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=10, help="Number of examples per class in each run")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs for training")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
-    parser.add_argument("--view", type=str, default='EE')
+    parser.add_argument("--view", type=str, default='random')
     parser.add_argument("--view_ratio", type=float, default=0.5)
     parser.add_argument("--shot", type=int, default=10)
     parser.add_argument("--data_per_class", type=int, default=500)
     
     args = parser.parse_args()
-    if args.view_ratio == 0.0:
+    if args.view == 'random':
         train_feature_paths = load_feature_paths(args.data_folder, 'train', args.view)
     else:
         train_feature_paths = load_feature_paths_with_view(args.data_folder, 'train', args.view)
