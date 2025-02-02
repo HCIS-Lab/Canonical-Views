@@ -58,7 +58,7 @@ def load_feature_paths(data_folder, split='train', view='random'):
     feature_paths = {}
     class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
     for class_idx, class_name in enumerate(class_list):
-        folder_path = os.path.join(data_folder, class_name, split)
+        folder_path = os.path.join(data_folder, class_name, class_name, split)
         instances = os.listdir(folder_path)
         feature_paths[class_name] = []
         for ins in instances:
@@ -112,7 +112,7 @@ class SelectedDataset:
             batch_labels = self.labels[i:i + self.batch_size]
             yield {'feature': batch_features, 'label': batch_labels}
 
-def plot_acc(acc_dict, episodes, folder_path):
+def plot_and_save_acc(acc_dict, episodes, folder_path):
     # Extract episode numbers (sorted) and corresponding metrics
     top1_acc = [acc_dict[episode]['top-1'] for episode in range(episodes+1)]
     top5_acc = [acc_dict[episode]['top-5'] for episode in range(episodes+1)]
@@ -131,6 +131,9 @@ def plot_acc(acc_dict, episodes, folder_path):
 
     # Save the plot to a file
     plt.savefig(os.path.join(folder_path, 'epoch_accuracy.png'), dpi=300, bbox_inches='tight')
+
+    with open(os.path.join(folder_path, 'acc.json'), "w", encoding="utf-8") as f:
+        json.dump(acc_dict, f, ensure_ascii=False, indent=4)
 
 def plot_view_selcetion(view_selection, episodes, folder_path, split='train'):
 
@@ -183,36 +186,42 @@ def plot_view_selcetion(view_selection, episodes, folder_path, split='train'):
     # Save the plot (optional)
     plt.savefig(os.path.join(folder_path, split+'_view_over_episode.png'), dpi=300, bbox_inches='tight')
     
-def plot_view_distribution(view_selection, episodes, folder_path, split='train'):
+def plot_view_distribution(view_selection, episode, folder_path, split='train'):
 
     x_list = []
     y_list = []
     z_list = []
+    color_list = []
 
-    for episode in range(episodes+1):
-        num_1p = 0
-        num_2p = 0
-        num_3p = 0
-        num_non_p = 0
-        for i, class_name in enumerate(class_list):
-            view_list = view_selection[str(episode)][class_name]
-            for data in view_list:
-                rots = data['rot']
-                rots = rots.split('_')
-                x_list.append(rots[0])
-                y_list.append(rots[1])
-                z_list.append(rots[2])
-
-    episode_list = list(range(1, episodes + 2))
+    for i, class_name in enumerate(class_list):
+        view_list = view_selection[str(episode)][class_name]
+        for data in view_list:
+            rots = data['rot']
+            rots = rots.split('_')
+            view_type = data['view']
+            x_list.append(float(rots[0]))
+            y_list.append(float(rots[1]))
+            z_list.append(float(rots[2]))
+            count_E = view_type.count('E')
+            if count_E == 0:
+                color = (1.,0.,0.)
+            elif count_E == 1:
+                color = (0.,1.,0,)
+            elif count_E ==2:
+                color = (0.,0.,1.)
+            else:
+                color = (0.,0.,0.)
+            color_list.append(color)
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-    scatter = ax.scatter(x_list, y_list, z_list, c=z_list, cmap='viridis', alpha=0.8)
+    scatter = ax.scatter(x_list, y_list, z_list, c=color_list, alpha=0.8)
 
     ax.set_xlabel('X Label')
     ax.set_ylabel('Y Label')
     ax.set_zlabel('Z Label')
-    plt.savefig(os.path.join(folder_path, 'view_dist_'+split, str(episodes+1)+".png"), dpi=300)
+    os.makedirs(os.path.join(folder_path, 'view_dist_'+split), exist_ok=True)
+    plt.savefig(os.path.join(folder_path, 'view_dist_'+split, str(episode)+".png"), dpi=300)
 
 
 def select_view(model, data_loader, episodes, folder_path, device, num_classes=10):
@@ -292,15 +301,13 @@ def train_rl_selection(train_feature_paths, test_feature_paths, args, num_classe
         test_sampled_paths += sampled_paths
         test_sampled_labels += sampled_labels
     test_dataset = FeatureDataset(test_sampled_paths, test_sampled_labels)
-    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=20, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=100, shuffle=False, num_workers=20, pin_memory=True)
     
 
-    best_t1 = 0
-    best_t5 = 0
-    worst_t1 = float("inf")
-    worst_t5 = float("inf")
+
+
     best_episode = 0
-    episode_acc = {}
+    episode_acc = {'best_top-1': 0.0, 'best_top-5': 0.0, 'worst_top-1': float("inf"), 'worst_top-5': float("inf")}
 
     train_view_selection = {}
     test_view_selection = {}
@@ -381,8 +388,8 @@ def train_rl_selection(train_feature_paths, test_feature_paths, args, num_classe
         # selected_dataset = SelectedDataset(copy.deepcopy(selected_features), copy.deepcopy(selected_labels))
         # selected_dataloader = DataLoader(selected_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=False)
         selected_dataloader = SelectedDataset(selected_features, selected_labels, batch_size=args.batch_size)
-        epoch_best_top_1 = 0
-        epoch_best_top_5 = 0
+        
+        episode_acc[episode] = {'top-1': 0.0, 'top-5': 0.0}
         for epoch in range(args.epochs):
             classifier.train()
             epoch_loss = 0.0
@@ -424,11 +431,19 @@ def train_rl_selection(train_feature_paths, test_feature_paths, args, num_classe
             top5_correct = (top5_predictions == all_labels.view(-1, 1)).any(dim=1).sum().item()  # Check if true label is in top 5
             top5_accuracy = top5_correct / len(all_labels)
             episode_acc[episode] = {'top-1': top1_accuracy, 'top-5': top5_accuracy}
-            if top1_accuracy > epoch_best_top_1:
-                epoch_best_top_1 = top1_accuracy
-                epoch_best_top_5 = top5_accuracy
-                episode_acc[episode]['best_top-1'] = top1_accuracy
+            if top1_accuracy > episode_acc[episode]['top-1']:
+                episode_acc[episode]['top-1'] = top1_accuracy
+            if top5_accuracy > episode_acc[episode]['top-5']:
+                episode_acc[episode]['top-5'] = top5_accuracy
 
+            if episode_acc[episode]['top-1'] > episode_acc['best_top-1']:
+                episode_acc['best_top-1'] = episode_acc[episode]['top-1']
+            elif top1_accuracy < episode_acc['worst_top-1']:
+                episode_acc['worst_top-1'] = top1_accuracy
+            if episode_acc[episode]['top-5'] > episode_acc['best_top-5']:
+                episode_acc['best_top-5'] = episode_acc[episode]['top-5']
+            elif top5_accuracy < episode_acc['worst_top-5']:
+                episode_acc['worst_top-5'] = top5_accuracy
         reward = top1_accuracy + 0.1 * top5_accuracy
 
         # ===============
@@ -453,13 +468,13 @@ def train_rl_selection(train_feature_paths, test_feature_paths, args, num_classe
         advantage = reward - baseline_reward + 1e-8
         # loss = -(log_probs * advantage).mean() - 0.01 * entropy
         loss = -(log_probs * advantage).mean() - 0.01 * entropy
-        print(f"Episode {episode + 1}: Top-1 = {epoch_best_top_1:.4f} Top-5 = {epoch_best_top_5:.4f} loss = {loss.item():.4f}")
+        print(f"Episode {episode + 1}: Top-1 = {episode_acc[episode]['top-1']:.4f} Top-5 = {episode_acc[episode]['top-5']:.4f} loss = {loss.item():.4f}")
         loss.backward()
         score_optimizer.step()
 
         score_network.eval()
 
-        plot_acc(episode_acc, episode, stored_folder)
+        plot_and_save_acc(episode_acc, episode, stored_folder)
         test_view_selection[str(episode)] = select_view(score_network, test_dataloader, episode, stored_folder, device, num_classes=10)
         plot_view_selcetion(train_view_selection, episode, stored_folder, 'train')
         plot_view_selcetion(test_view_selection, episode, stored_folder, 'test')
