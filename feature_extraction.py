@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 
 def get_resnet50_model():
     model = models.resnet50(pretrained=True)
-    model = torch.nn.Sequential(*list(model.children())[:-1])  # Remove the final classification layer
+    model = torch.nn.Sequential(*list(model.children())[:-2])  # Remove the final classification layer
     model = torch.nn.DataParallel(model)  # Enable multi-GPU support
     model.eval()
     return model

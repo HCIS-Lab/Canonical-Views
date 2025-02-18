@@ -59,7 +59,7 @@ def load_feature_paths_with_view(data_folder, split='train', view='random'):
     feature_paths_planar = {}
     class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
     for class_idx, class_name in enumerate(class_list):
-        folder_path = os.path.join(data_folder, class_name, class_name, split)
+        folder_path = os.path.join(data_folder, class_name, split)
         instances = os.listdir(folder_path)
         feature_paths_non_planar[class_name] = []
         feature_paths_planar[class_name] = []
@@ -109,8 +109,10 @@ def train_few_shot(train_feature_paths, \
     test_sampled_paths = []
     test_sampled_labels = []
     for run in range(num_runs):
+        random.seed(None)  # Ensures randomness across runs
         if args.view == 'random':
             for class_name, path_list in train_feature_paths.items():
+                random.seed(None)
                 sampled_indices = random.sample(range(len(path_list)), shot)
                 sampled_paths = [path_list[i] for i in sampled_indices]
                 sampled_labels = [class_list.index(class_name)]*shot
@@ -121,6 +123,7 @@ def train_few_shot(train_feature_paths, \
             num_non_planar = int((1.0-args.view_ratio)*shot)
             num_planar = int(args.view_ratio*shot)
             for class_name, path_list in feature_paths_non_planar.items():
+                random.seed(None)
                 sampled_indices = random.sample(range(len(path_list)), num_non_planar)
                 sampled_paths = [path_list[i] for i in sampled_indices]
                 sampled_labels = [class_list.index(class_name)]*num_non_planar

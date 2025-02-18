@@ -1,12 +1,19 @@
 #!/bin/bash
+
+if [ "$1" = "" ]; then
+    echo "Job name cannot be empty"
+    exit 1
+fi
+
+export JOB_NAME=$1_$(date '+%Y-%m-%d_%H:%M:%S')
+
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --gpus=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=256G
+#SBATCH --mem=200G
 #SBATCH --time=24:00:00
-#SBATCH --job-name=random  # Default job name, overridden by `-J`
 
 # Ensure the output directory exists before Slurm writes logs
 mkdir -p experiments
