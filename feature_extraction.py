@@ -13,6 +13,13 @@ def get_resnet50_model():
     model.eval()
     return model
 
+def get_resnet18_model_early():
+    model = models.resnet18(pretrained=True)
+    model = torch.nn.Sequential(*list(model.children())[:-5])  # Remove the final classification layer
+    model = torch.nn.DataParallel(model)  # Enable multi-GPU support
+    model.eval()
+    return model
+
 class ImageDataset(Dataset):
     def __init__(self, image_paths, transform):
         self.image_paths = image_paths
@@ -63,7 +70,9 @@ def save_features_for_folder(input_folder, output_folder, model, device, batch_s
 
 if __name__ == "__main__":
     input_folder = "/N/project/ego4d_vlm/ShapeNet"
-    output_folder = "/N/project/ego4d_vlm/ShapeNet/feature"
+    # output_folder = "/N/project/ego4d_vlm/ShapeNet/feature"
+    output_folder = "/N/project/ego4d_vlm/ShapeNet/feature_18_1stconv"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = get_resnet50_model().to(device)
+    # model = get_resnet50_model().to(device)
+    model = get_resnet18_model_early().to(device)
     save_features_for_folder(input_folder, output_folder, model, device, batch_size=64)

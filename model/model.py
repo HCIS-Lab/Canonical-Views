@@ -32,16 +32,16 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True, warn_only=True)
 
-def initialize_fixed_model(seed=42, feature=True, pretrained=True):
+def initialize_fixed_model(seed=42, feature=True, pretrained=True, early_exit=False):
     set_seed(seed)  # Ensure deterministic behavior for this model
     if feature:
         fixed_model = FeatureClassifier()
     else:
-        fixed_model = ImageClassifier(pretrained=pretrained)
+        fixed_model = ImageClassifier(pretrained=pretrained, early_exit=early_exit)
     return fixed_model
 
 class ScoreRes(nn.Module):
-    def __init__(self, input_dim, rot=False):
+    def __init__(self, input_dim, rot=False, pretrained=True):
         super(ScoreRes, self).__init__()
         model = models.resnet18(pretrained=pretrained)
         model = torch.nn.Sequential(*list(model.children())[:-1])
@@ -61,7 +61,7 @@ class ScoreRes(nn.Module):
         return x.squeeze()
 
 class ScoreNetwork(nn.Module):
-    def __init__(self, input_dim, rot=False):
+    def __init__(self, input_dim, rot=False, pretrained=True):
         super(ScoreNetwork, self).__init__()
         # First 1x1 convolution to reduce dimensionality (2048 -> 1024)
         self.conv1 = nn.Conv2d(2048, 1024, kernel_size=1)
@@ -124,23 +124,41 @@ class ScoreNetwork(nn.Module):
         return x.squeeze()
 
 class ImageClassifier(nn.Module):
-    def __init__(self, num_classes=10, pretrained=True):
+    def __init__(self, num_classes=10, pretrained=True, early_exit=False):
         super(ImageClassifier, self).__init__()
+        self.early_exit = early_exit
         model = models.resnet18(pretrained=pretrained)
-        model = torch.nn.Sequential(*list(model.children())[:-1])
-        self.resnet = model
-        self.fc1 = nn.Linear(512, 128)
-        self.bn1 = nn.BatchNorm1d(128)
-        self.fc2 = nn.Linear(128, num_classes)
+        if not self.early_exit:
+            model = torch.nn.Sequential(*list(model.children())[:-1])
+            self.resnet = model
+            self.fc1 = nn.Linear(512, 128)
+            self.bn1 = nn.BatchNorm1d(128)
+            self.fc2 = nn.Linear(128, num_classes)
+        else:
+            model = torch.nn.Sequential(*list(model.children())[:-5])
+            self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+            self.fc1 = nn.Linear(64, 32)
+            self.bn1 = nn.BatchNorm1d(32)
+            self.fc2 = nn.Linear(32, num_classes)
 
     def forward(self, x, rot=None):
-        x = self.resnet(x).squeeze()
-        x = self.fc1(x)
-        x = self.bn1(x)
-        x = torch.relu(x)
-        x = self.fc2(x)
+        if not self.early_exit:
+            x = self.resnet(x).squeeze()
+            x = self.fc1(x)
+            x = self.bn1(x)
+            x = torch.relu(x)
+            x = self.fc2(x)
+            x = x.squeeze()
+        else:
+            x = self.resnet(x)
+            x = self.global_avg_pool(x)
+            x = x.squeeze()
+            x = self.fc1(x)
+            x = self.bn1(x)
+            x = torch.relu(x)
+            x = self.fc2(x)
 
-        return x.squeeze()
+        return x
 
 class FeatureClassifier(nn.Module):
     def __init__(self, num_classes=10):

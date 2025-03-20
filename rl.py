@@ -22,7 +22,7 @@ import model.model as model
 
 class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
 
-def select_view(model, data_loader, episodes, folder_path, device, num_classes=10, tau=0.5):
+def select_view(args, model, data_loader, episodes, folder_path, device, num_classes=10, tau=0.5):
     model.eval()
     all_labels, all_attributes = [], []
     all_scores = {class_id: [] for class_id in range(num_classes)}
@@ -35,10 +35,13 @@ def select_view(model, data_loader, episodes, folder_path, device, num_classes=1
             ids = data['id']
             rots = data['rot']
             planars = data['planar']
-            rot_input = data['rot_input']
-
+            if args.rot:
+                rot_input = data['rot_input']
+                rot_input = rot_input.to(device)
+            else:
+                rot_input = None
             features = features.to(device)
-            rot_input = rot_input.to(device)
+            
             scores = model(features, rot_input)
             for b in range(len(features)):
                 all_attributes.append({'class_name': class_names[b],
@@ -68,25 +71,29 @@ def select_view(model, data_loader, episodes, folder_path, device, num_classes=1
     return view_selection
 
 # Reinforcement learning training loop
-def train_rl_selection(train_paths, test_paths, args, num_classes=10):
+def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_image_paths=None, test_image_paths=None):
     seed = random.randint(1, 100)
+    ckp_dir = 'checkpoints'
     root_dir = 'results'
     os.makedirs(root_dir, exist_ok=True)  # Will create the folder if it doesn't exist
     exp_dir = 'rl_lr'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
     + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
-    +'_shot'+str(args.shot) + '_sample' + str(args.data_per_class) \
-    +'_tau' + str(args.tau) + '_entropy' + str(args.entropy) + '_rot' + str(args.rot) \
-    +'_feature' + str(args.feature) + '_pre' + str(args.pretrained)
+    + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) \
+    +'_s_feature' + str(args.s_feature) +'_c_feature' + str(args.c_feature) \
+    +'_s_pre' + str(args.s_pretrained) +'_c_pre' + str(args.c_pretrained) \
+    +'_planar_ratio' + str(args.planar_ratio)
 
     stored_folder = os.path.join(root_dir,exp_dir)
+    ckp_folder = os.path.join(root_dir,exp_dir)
     os.makedirs(stored_folder, exist_ok=True)
+    os.makedirs(ckp_folder, exist_ok=True)
     store_every_episode = args.num_episode * 0.1
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # if args.feature:
-    score_network = model.ScoreNetwork(args.input_dim, args.rot).to(device)
-    # else:
-    #     score_network = model.ScoreRes(args.input_dim, args.rot).to(device)
+    if args.s_feature:
+        score_network = model.ScoreNetwork(args.input_dim, args.rot, args.s_pretrained).to(device)
+    else:
+        score_network = model.ScoreRes(args.input_dim, args.rot, args.s_pretrained).to(device)
     score_optimizer = optim.Adam(score_network.parameters(), lr=args.lr_rl)
     
     criterion = nn.CrossEntropyLoss()
@@ -95,29 +102,56 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10):
     train_sampled_labels = []
     test_sampled_paths = []
     test_sampled_labels = []
+    c_test_sampled_paths = []
+    c_test_sampled_labels = []
 
     for class_name, path_list in train_paths.items():
         sampled_paths = path_list
         sampled_labels = [class_list.index(class_name)]*len(sampled_paths)
         train_sampled_paths += sampled_paths
         train_sampled_labels += sampled_labels
-    # if args.feature:
-    train_dataset = dataset.FeatureDataset(train_sampled_paths, train_sampled_labels)
-    # else:
-    #     train_dataset = dataset.ImageDataset(train_sampled_paths, train_sampled_labels)
+    if args.s_feature:
+        train_dataset = dataset.FeatureDataset(train_sampled_paths, train_sampled_labels)
+    else:
+        train_dataset = dataset.ImageDataset(train_sampled_paths, train_sampled_labels)
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=10, pin_memory=True)
+    
+    # if args.s_feature and not args.c_feature:
+    #     c_train_dataloader = dataset.ImageDataset(train_image_paths, train_sampled_labels)
+    #     c_train_dataloader =  DataLoader(c_train_dataloader, batch_size=batch_size, shuffle=True, num_workers=10, pin_memory=True)
+    # elif args.s_feature and args.c_feature:
+    #     c_train_dataloader = train_dataloader
+    # elif not args.s_feature and not args.c_feature:
+    #     c_train_dataloader = train_dataloader
+
 
     for class_name, path_list in test_paths.items():
         sampled_paths = path_list
         sampled_labels = [class_list.index(class_name)]*len(sampled_paths)
         test_sampled_paths += sampled_paths
         test_sampled_labels += sampled_labels
-    if args.feature:
+    if args.s_feature:
         test_dataset = dataset.FeatureDataset(test_sampled_paths, test_sampled_labels)
     else:
         test_dataset = dataset.ImageDataset(test_sampled_paths, test_sampled_labels)
+    
     test_dataloader = DataLoader(test_dataset, batch_size=50, shuffle=False, num_workers=10, pin_memory=True)
+    
+    if args.s_feature and not args.c_feature:
 
+        for class_name, path_list in test_image_paths.items():
+            sampled_paths = path_list
+            sampled_labels = [class_list.index(class_name)]*len(sampled_paths)
+            c_test_sampled_paths += sampled_paths
+            c_test_sampled_labels += sampled_labels
+
+        c_test_dataloader = dataset.ImageDataset(c_test_sampled_paths, c_test_sampled_labels)
+        c_test_dataloader =  DataLoader(c_test_dataloader, batch_size=50, shuffle=False, num_workers=10, pin_memory=True)
+    elif args.s_feature and args.c_feature:
+        c_test_dataloader = test_dataloader
+    elif not args.s_feature and not args.c_feature:
+        c_test_dataloader = test_dataloader
+        
     best_episode = 0
     episode_acc = {'best_top-1': 0.0, 'best_top-5': 0.0, 'worst_top-1': float("inf"), 'worst_top-5': float("inf")}
 
@@ -144,7 +178,8 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10):
 
             features = features.to(device)
             rot_input = rot_input.to(device)
-
+            if not args.rot:
+                rot_input = None
             scores = score_network(features, rot_input)
             for b in range(len(features)):
                 # global append
@@ -203,9 +238,9 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10):
             )
 
         # Train classifier on selected data
-        classifier = model.initialize_fixed_model(seed, args.feature, args.pretrained).to(device)
+        classifier = model.initialize_fixed_model(seed, args.c_feature, args.c_pretrained).to(device)
         classifier_optimizer = optim.Adam(classifier.parameters(), lr=args.lr_cls, weight_decay=args.wd_cls)
-        if args.pretrained:
+        if args.c_pretrained:
             selected_dataloader = dataset.SelectedDataset(selected_features, selected_labels, batch_size=args.batch_size)
         else:
             selected_dataloader = dataset.SelectedImageDataset(selected_image_paths, selected_labels, batch_size=args.batch_size)
@@ -218,7 +253,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10):
             all_labels = []
             for data in selected_dataloader:
                 features, targets = data['feature'], data['label']
-                if args.feature:
+                if args.c_feature:
                     features, targets = torch.stack(features).to(device), torch.tensor(targets).to(device)
                 else:
                     features, targets = torch.stack(list(features)).to(device), torch.stack(list(torch.tensor(targets))).to(device)
@@ -236,7 +271,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10):
             correct = 0
             if epoch % args.val_every == 0 or epoch ==args.epochs-1:
                 with torch.no_grad():
-                    for data in test_dataloader:
+                    for data in c_test_dataloader:
                         features = data['feature']
                         targets = data['label']
                         features, targets = features.to(device), targets.to(device)
@@ -295,9 +330,9 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10):
 
         score_network.eval()
 
-        test_view_selection[episode] = select_view(score_network, test_dataloader, episode, stored_folder, device, num_classes=10, tau=args.tau)        
-        if (episode % (args.num_episode // 10) == 0 and episode != 0) or episode == args.num_episode - 1:
-            plot_every = args.num_episode // 10
+        test_view_selection[episode] = select_view(args, score_network, test_dataloader, episode, stored_folder, device, num_classes=10, tau=args.tau)        
+        if (episode % (args.num_episode // 50) == 0 and episode != 0) or episode == args.num_episode - 1:
+            plot_every = args.num_episode // 50
         # if (episode % args.plot_every == 0 and episode!=0) or episode==args.num_episode-1:
             plot.plot_and_save_acc(episode_acc, episode, stored_folder, args.plot_every)
             plot.plot_view_selcetion(train_view_selection, episode, stored_folder, 'train', plot_every, args.shot)
@@ -308,13 +343,11 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10):
                 json.dump(train_view_selection, f, ensure_ascii=False, indent=4)
             with open(os.path.join(stored_folder,'test_view.json'), 'w', encoding='utf-8') as f:
                 json.dump(test_view_selection, f, ensure_ascii=False, indent=4)
-
+            torch.save(score_network, os.path.join(ckp_folder, 'episode_' + str(episode) + '.pt'))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Five-Shot Training")
-    # parser.add_argument("--data_folder", type=str, default='/nfs/wattrel/data/md0/kung/ShapeNet/feature', help="Path to saved features")
-    parser.add_argument("--data_folder", type=str, default='/N/project/ego4d_vlm/ShapeNet/feature', help="Path to saved features")
-    parser.add_argument("--num_episode", type=int, default=3000)
+    parser.add_argument("--num_episode", type=int, default=500)
     parser.add_argument("--input_dim", type=int, default=2048)
     parser.add_argument("--batch_size", type=int, default=20, help="Number of examples per class in each run")
     parser.add_argument("--epochs", type=int, default=20, help="Number of epochs for training")
@@ -325,22 +358,30 @@ if __name__ == "__main__":
     parser.add_argument("--entropy", type=float, default=0.01, help="Learning rate")
     parser.add_argument("--view", type=str, default='random')
     parser.add_argument("--shot", type=int, default=10)
-    parser.add_argument("--rot", type=bool, default=True)
+    parser.add_argument("--rot", action="store_true")
     parser.add_argument("--data_per_class", type=int, default=500)
     parser.add_argument("--val_every", type=int, default=5)
     parser.add_argument("--plot_every", type=int, default=100)
-    parser.add_argument("--feature", type=bool, default=True)
-    parser.add_argument("--pretrained", type=bool, default=True)
-    
+    parser.add_argument("--s_feature", action="store_true")
+    parser.add_argument("--c_feature", action="store_true")
+    parser.add_argument("--s_pretrained", action="store_true")
+    parser.add_argument("--c_pretrained", action="store_true")
+    parser.add_argument("--planar_ratio", type=float, default=0.0, help="Learning rate")
+    parser.add_argument("--early_exit", action="store_true")
     args = parser.parse_args()
     # if args.feature:
+    print(args)
     data_folder = '../ShapeNet/feature'
-    train_paths = dataset.load_feature_paths(data_folder, 'train', args.data_per_class)
-    if args.feature:
+    train_paths = dataset.load_feature_paths(data_folder, 'train', args.data_per_class, args.planar_ratio)
+    if args.s_feature or args.c_feature:
         test_paths = dataset.load_feature_paths(data_folder, 'test', args.data_per_class)
-    else:
-        data_folder = '../ShapeNet/'
-    #     train_paths = dataset.load_image_paths(data_folder, 'train', args.data_per_class)
-        test_paths = dataset.load_image_paths(data_folder, 'test', args.data_per_class)
 
-    train_rl_selection(train_paths, test_paths, args)
+    if not args.s_feature or not args.c_feature:
+        data_folder = '../ShapeNet/'
+        train_image_paths = dataset.load_image_paths(data_folder, 'train', args.data_per_class)
+        test_image_paths = dataset.load_image_paths(data_folder, 'test', args.data_per_class)
+    else:
+        train_image_paths = None
+        test_image_paths = None
+
+    train_rl_selection(train_paths, test_paths, args, 10, train_image_paths, test_image_paths)

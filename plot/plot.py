@@ -76,7 +76,7 @@ def plot_view_selcetion(view_selection, episodes, folder_path, split, plot_every
 
     plt.figure(figsize=(10, 6))
     plt.plot(x_axis, list_p, marker='o', label='planar')
-    plt.plot(x_axis, list_non_p, marker='o', label='non-planar')
+    # plt.plot(x_axis, list_non_p, marker='o', label='non-planar')
 
     # Add labels and title
     plt.xlabel('Episode')

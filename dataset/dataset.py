@@ -5,7 +5,33 @@ from PIL import Image
 import os
 import random
 
-def load_feature_paths(data_folder, split, num_sample):
+
+def in_angle_range(angle, category, offset):
+        lower_bound = (category - offset) % 360
+        upper_bound = (category + offset) % 360
+        if lower_bound < upper_bound:
+            return lower_bound <= angle <= upper_bound
+        else:
+            return angle >= lower_bound or angle <= upper_bound  # Wraps around 360
+
+def check_angles(x, y, z):
+    offset = 15
+    categories = [
+        0,
+        90,
+        180,
+        270
+    ]
+    planar = [False]*3
+    for i, angle in enumerate([x, y, z]):
+        for cat in categories:
+            if in_angle_range(int(angle), cat, offset):
+                planar[i] = True
+                break
+
+    return all(planar)
+
+def load_feature_paths(data_folder, split, num_sample, planar_ratio=0.0):
     feature_paths = {}
     class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
     for class_idx, class_name in enumerate(class_list):
@@ -15,8 +41,31 @@ def load_feature_paths(data_folder, split, num_sample):
         # for ins in instances:
         ins = instances[0]
         instances_path = os.path.join(folder_path, ins, 'screenshot')
-        files = [os.path.join(instances_path, f) for f in os.listdir(instances_path) if os.path.isfile(os.path.join(instances_path, f)) and f.endswith(".pt")]
-        files = files[:num_sample]
+
+        planar = []
+        non_planar = []
+        
+        for f in os.listdir(instances_path):
+            if os.path.isfile(os.path.join(instances_path, f)) and f.endswith(".pt"):
+                rot = f.split('.')[0]
+                rot = rot.split('_')
+                x, y, z = rot[2], rot[3], rot[4]
+                if check_angles(x, y, z):
+                    planar.append(os.path.join(instances_path, f))
+                else:
+                    non_planar.append(os.path.join(instances_path, f))
+        
+        # total_num = int(num_planar/planar_ratio)
+        # num_non_planar = int((1-planar_ratio)*total_num)
+        if planar_ratio != 0.0:
+            planar = random.sample(planar, 10)
+            num_planar = len(planar)
+            total_num = int(num_planar/planar_ratio)
+            num_non_planar = int((1-planar_ratio)*total_num)
+            non_planar = random.sample(non_planar, num_non_planar)
+        files = planar + non_planar
+        # files = [os.path.join(instances_path, f) for f in os.listdir(instances_path) if os.path.isfile(os.path.join(instances_path, f)) and f.endswith(".pt")]
+        # files = files[:num_sample]
         feature_paths[class_name] = files
 
     return feature_paths
@@ -149,8 +198,9 @@ class FeatureDataset(Dataset):
         # /nfs/wattrel/data/md0/kung/ShapeNet/feature/airplane/airplane/train/1021a0914a7207aff927ed529ad90a11/screenshot/xxx.pt
         image_file_path = self.feature_paths[idx].split('/')
         image_file_path[-1] = image_file_path[-1].replace('.pt', '')
-        image_file_path = image_file_path.pop(-6)
-        image_file_path = image_file_path.pop(-6)
+        
+        image_file_path.pop(-6)
+        image_file_path.pop(-6)
         image_file_path = os.path.join(*image_file_path)
 
         return {'feature': feature,
@@ -218,7 +268,7 @@ class SelectedImageDataset:
             batch_labels = torch.tensor(batch_labels)  # Convert labels to tensor
             
             yield {'feature': batch_images, 'label': batch_labels}
-            
+
             # batch_images = self.image_paths[i:i + self.batch_size]
             # batch_labels = self.labels[i:i + self.batch_size]
             # yield {'feature': batch_images, 'label': batch_labels}
