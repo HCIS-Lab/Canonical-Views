@@ -22,6 +22,24 @@ import model.model as model
 
 class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
 
+def compute_depth_mae(pred_depth, target_depth, mask=None):
+    """
+    Computes Mean Absolute Error (MAE) between predicted and target depth.
+    
+    Args:
+        pred_depth: (B, 1, H, W) predicted depth tensor
+        target_depth: (B, 1, H, W) ground truth depth tensor
+        mask: (B, 1, H, W) optional binary mask for valid pixels
+    
+    Returns:
+        Scalar MAE value
+    """
+    abs_error = torch.abs(pred_depth - target_depth)
+    if mask is not None:
+        abs_error = abs_error[mask]
+    return abs_error.mean().item()
+
+
 def select_view(args, model, data_loader, episodes, folder_path, device, num_classes=10, tau=0.5):
     model.eval()
     all_labels, all_attributes = [], []
@@ -76,7 +94,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
     ckp_dir = 'checkpoints'
     root_dir = 'results'
     os.makedirs(root_dir, exist_ok=True)  # Will create the folder if it doesn't exist
-    exp_dir = 'rl_lr'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
+    exp_dir = 'depth_rl_lr'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
     + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
     + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) \
     +'_s_input' + str(args.s_input) +'_c_feature' + str(args.c_feature) \
@@ -111,9 +129,9 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         train_sampled_paths += sampled_paths
         train_sampled_labels += sampled_labels
     if args.s_input:
-        train_dataset = dataset.FeatureDataset(train_sampled_paths, train_sampled_labels)
+        train_dataset = dataset.DepthFeatureDataset(train_sampled_paths, train_sampled_labels)
     else:
-        train_dataset = dataset.ImageDataset(train_sampled_paths, train_sampled_labels)
+        train_dataset = dataset.DepthDataset(train_sampled_paths, train_sampled_labels)
     train_dataloader = DataLoader(train_dataset, batch_size=50, shuffle=True, num_workers=10, pin_memory=True)
     
     # if args.s_feature and not args.c_feature:
@@ -131,9 +149,9 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         test_sampled_paths += sampled_paths
         test_sampled_labels += sampled_labels
     if args.s_input:
-        test_dataset = dataset.FeatureDataset(test_sampled_paths, test_sampled_labels)
+        test_dataset = dataset.DepthFeatureDataset(test_sampled_paths, test_sampled_labels, load_depth=True)
     else:
-        test_dataset = dataset.ImageDataset(test_sampled_paths, test_sampled_labels)
+        test_dataset = dataset.DepthDataset(test_sampled_paths, test_sampled_labels, load_depth=True)
     
     test_dataloader = DataLoader(test_dataset, batch_size=50, shuffle=False, num_workers=10, pin_memory=True)
     
@@ -145,7 +163,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
             c_test_sampled_paths += sampled_paths
             c_test_sampled_labels += sampled_labels
 
-        c_test_dataloader = dataset.ImageDataset(c_test_sampled_paths, c_test_sampled_labels)
+        c_test_dataloader = dataset.DepthDataset(c_test_sampled_paths, c_test_sampled_labels)
         c_test_dataloader =  DataLoader(c_test_dataloader, batch_size=50, shuffle=False, num_workers=10, pin_memory=True)
     elif args.s_input and args.c_feature:
         c_test_dataloader = test_dataloader
@@ -153,7 +171,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         c_test_dataloader = test_dataloader
         
     best_episode = 0
-    episode_acc = {'best_top-1': 0.0, 'best_top-5': 0.0, 'worst_top-1': float("inf"), 'worst_top-5': float("inf")}
+    episode_acc = {'best_top-1': 0.0, 'best_top-5': 0.0, 'worst_top-1': float("inf"), 'worst_top-5': float("inf"), 'best_mae': float("inf")}
 
     train_view_selection = {}
     test_view_selection = {}
@@ -162,7 +180,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         is_best = False
         # Assign scores to all data
         score_network.train()
-        all_features, all_labels, all_attributes, all_images_paths = [], [], [], []
+        all_features, all_labels, all_attributes, all_images_paths, all_depth_paths = [], [], [], [], []
         all_scores = {class_id: [] for class_id in range(num_classes)}
         class_indices = {class_id: [] for class_id in range(num_classes)}
         # with torch.no_grad():
@@ -175,6 +193,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
             # rot_input = data['rot_input']
             planars = data['planar']
             image_paths = data['image_path']
+            depth_paths = data['depth_path']
 
             features = features.to(device)
             # rot_input = rot_input.to(device)
@@ -190,6 +209,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
                                         # 'rot': rots[b],
                                         'planar': bool(planars[b])})
                 all_images_paths.append(image_paths[b])
+                all_depth_paths.append(depth_paths[b])
                 # put this sample’s score into the appropriate class list
                 c = labels[b].item()
                 all_scores[c].append(scores[b].cpu())
@@ -210,6 +230,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         selected_attributes = []
         selected_image_paths = []
         selected_local_indices = []  # to help with policy update
+        selected_depth = []
         train_view_selection[episode] = {}
         for c in range(num_classes):
             dist_c = all_scores[c]  # shape [Nc]
@@ -228,6 +249,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
                 selected_labels.append(c)
                 selected_attributes.append(all_attributes[g])
                 selected_image_paths.append(all_images_paths[g])
+                selected_depth.append(all_depth_paths[g])
                 # if episode % store_every_episode == 0 or episode==args.num_episode-1:
                 train_view_selection[episode][class_list[c]].append(all_attributes[g])
 
@@ -238,52 +260,65 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
             )
 
         # Train classifier on selected data
-        classifier = model.initialize_fixed_model(seed, args.c_feature, args.c_pretrained).to(device)
-        classifier_optimizer = optim.Adam(classifier.parameters(), lr=args.lr_cls, weight_decay=args.wd_cls)
-        
+        classifier_depth = model.initialize_fixed_model(seed, args.c_feature, args.c_pretrained, args.depth, args.classifier)
+        classifier_depth = classifier_depth.to(device)
+        classifier_depth_optimizer = optim.Adam(classifier_depth.parameters(), lr=args.lr_cls, weight_decay=args.wd_cls)
+
         if args.c_pretrained:
-            selected_dataloader = dataset.SelectedDataset(selected_features, selected_labels, batch_size=args.batch_size)
+            selected_dataloader = dataset.SelectedDataset(selected_features, selected_labels, args.batch_size, selected_depth)
         else:
-            selected_dataloader = dataset.SelectedImageDataset(selected_image_paths, selected_labels, batch_size=args.batch_size)
-        
-        episode_acc[episode] = {'top-1': 0.0, 'top-5': 0.0}
+            selected_dataloader = dataset.SelectedImageDataset(selected_image_paths, selected_labels, args.batch_size, selected_depth)
+        episode_acc[episode] = {'top-1': 0.0, 'top-5': 0.0, 'mae': float("inf")}
         for epoch in range(args.epochs):
-            classifier.train()
+            classifier_depth.train()
             epoch_loss = 0.0
             selected_dataloader.shuffle()
             all_outputs = []
             all_labels = []
             for data in selected_dataloader:
-                features, targets = data['feature'], data['label']
+                features, targets, depths = data['feature'], data['label'], data['depth']
                 if args.c_feature:
-                    features, targets = torch.stack(features).to(device), torch.tensor(targets).to(device)
+                    features, targets, depths = torch.stack(features).to(device), torch.tensor(targets).to(device), torch.tensor(data['depth']).to(device)
                 else:
-                    features, targets = torch.stack(list(features)).to(device), torch.stack(list(torch.tensor(targets))).to(device)
+                    features, targets, depths = torch.stack(list(features)).to(device), torch.stack(list(torch.tensor(targets))).to(device), torch.stack(list(depths)).to(device)
                     # features, targets = features.to(device), torch.stack((torch.tensor(targets)).to(device)
-                classifier_optimizer.zero_grad()
-                outputs = classifier(features)
-                loss = criterion(outputs, targets)
+                classifier_depth_optimizer.zero_grad()
+
+                cls_outputs, pred_depth = classifier_depth(features)
+                cls_loss = criterion(cls_outputs, targets)
+                depth_loss = nn.SmoothL1Loss()(pred_depth, depths)
+                loss = cls_loss + depth_loss
+
                 loss.backward()
                 epoch_loss += loss.item()
-                classifier_optimizer.step()
+                classifier_depth_optimizer.step()
 
-            classifier.eval()
+            classifier_depth.eval()
             all_outputs = []
             all_labels = []
+            all_pred_depth = []
+            all_depth = []
             correct = 0
             if epoch % args.val_every == 0 or epoch ==args.epochs-1:
                 with torch.no_grad():
                     for data in c_test_dataloader:
                         features = data['feature']
                         targets = data['label']
-                        features, targets = features.to(device), targets.to(device)
-                        outputs = classifier(features)
-                        all_outputs.append(outputs.cpu())
+                        depths = data['depth']
+                        # depths = torch.stack(depths, dim=0)
+                        features, targets , depths = features.to(device), targets.to(device), depths.to(device)
+                        cls_outputs, pred_depth = classifier_depth(features)
+                        all_outputs.append(cls_outputs.cpu())
                         all_labels.append(targets.cpu())
+                        all_pred_depth.append(pred_depth)
+                        all_depth.append(depths)
                         # correct += (outputs.argmax(dim=1) == targets).sum().item()
                 # Concatenate all outputs and labels into tensors
                 all_outputs = torch.cat(all_outputs, dim=0)  # Shape: [num_samples, num_classes]
                 all_labels = torch.cat(all_labels, dim=0)    # Shape: [num_samples]
+
+                all_pred_depth = torch.cat(all_pred_depth, dim=0)
+                all_depth = torch.cat(all_depth, dim=0)
 
                 top1_predictions = all_outputs.argmax(dim=1)  # Get top-1 predictions
                 top1_correct = (top1_predictions == all_labels).sum().item()
@@ -292,6 +327,9 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
                 top5_predictions = all_outputs.topk(5, dim=1).indices  # Get top-5 class indices
                 top5_correct = (top5_predictions == all_labels.view(-1, 1)).any(dim=1).sum().item()  # Check if true label is in top 5
                 top5_accuracy = top5_correct / len(all_labels)
+
+                mae = compute_depth_mae(all_pred_depth, all_depth)
+
                 if top1_accuracy > episode_acc[episode]['top-1']:
                     episode_acc[episode]['top-1'] = top1_accuracy
                 if top5_accuracy > episode_acc[episode]['top-5']:
@@ -299,14 +337,20 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
 
                 if episode_acc[episode]['top-1'] > episode_acc['best_top-1']:
                     episode_acc['best_top-1'] = episode_acc[episode]['top-1']
-                # elif top1_accuracy < episode_acc['worst_top-1']:
-                #     episode_acc['worst_top-1'] = top1_accuracy
+                elif top1_accuracy < episode_acc['worst_top-1']:
+                    episode_acc['worst_top-1'] = top1_accuracy
                 if episode_acc[episode]['top-5'] > episode_acc['best_top-5']:
                     episode_acc['best_top-5'] = episode_acc[episode]['top-5']
-                # elif top5_accuracy < episode_acc['worst_top-5']:
-                #     episode_acc['worst_top-5'] = top5_accuracy
+                elif top5_accuracy < episode_acc['worst_top-5']:
+                    episode_acc['worst_top-5'] = top5_accuracy
 
-        reward = episode_acc[episode]['top-1'] + 0.1 * episode_acc[episode]['top-5']
+                if mae < episode_acc[episode]['mae']:
+                    episode_acc[episode]['mae'] = mae
+                if episode_acc[episode]['mae'] < episode_acc['best_mae']:
+                    episode_acc['best_mae'] = episode_acc[episode]['mae']
+
+
+        reward = episode_acc[episode]['top-1'] + 0.1 * episode_acc[episode]['top-5'] - episode_acc[episode]['mae']
 
         # ===============
         # Policy Gradient Update
@@ -326,7 +370,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         baseline_reward = 0.9 * baseline_reward + 0.1 * reward if episode > 0 else reward
         advantage = reward - baseline_reward + 1e-8
         loss = (log_probs * advantage).mean() - args.entropy * entropy
-        print(f"Episode {episode}: Top-1 = {episode_acc[episode]['top-1']:.4f} Top-5 = {episode_acc[episode]['top-5']:.4f} loss = {loss.item():.4f}")
+        print(f"Episode {episode}: Top-1 = {episode_acc[episode]['top-1']:.4f} Top-5 = {episode_acc[episode]['top-5']:.4f}  MAE = {episode_acc[episode]['mae']:.4f} loss = {loss.item():.4f}")
         loss.backward()
         score_optimizer.step()
 
@@ -341,10 +385,10 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
             plot.plot_view_selcetion(test_view_selection, episode, stored_folder, 'test', plot_every, args.shot)
             # plot.plot_view_distribution(train_view_selection, episode, stored_folder, 'train', args.plot_every, args.shot)
             # plot.plot_view_distribution(test_view_selection, episode, stored_folder, 'test', args.plot_every, args.shot)
-            with open(os.path.join(stored_folder,'train_view.json'), 'w', encoding='utf-8') as f:
-                json.dump(train_view_selection, f, ensure_ascii=False, indent=4)
-            with open(os.path.join(stored_folder,'test_view.json'), 'w', encoding='utf-8') as f:
-                json.dump(test_view_selection, f, ensure_ascii=False, indent=4)
+            # with open(os.path.join(stored_folder,'train_view.json'), 'w', encoding='utf-8') as f:
+            #     json.dump(train_view_selection, f, ensure_ascii=False, indent=4)
+            # with open(os.path.join(stored_folder,'test_view.json'), 'w', encoding='utf-8') as f:
+            #     json.dump(test_view_selection, f, ensure_ascii=False, indent=4)
             torch.save(score_network, os.path.join(ckp_folder, 'episode_' + str(episode) + '.pt'))
 
 if __name__ == "__main__":
@@ -355,7 +399,9 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=20, help="Number of epochs for training")
     parser.add_argument("--lr_rl", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--lr_cls", type=float, default=7e-5, help="Learning rate")
+    parser.add_argument("--lr_depth", type=float, default=7e-5, help="Learning rate")
     parser.add_argument("--wd_cls", type=float, default=1e-3, help="Learning rate")
+
     parser.add_argument("--tau", type=float, default=0.5, help="Learning rate")
     parser.add_argument("--entropy", type=float, default=0.01, help="Learning rate")
     parser.add_argument("--view", type=str, default='random')
@@ -365,17 +411,20 @@ if __name__ == "__main__":
     parser.add_argument("--val_every", type=int, default=5)
     parser.add_argument("--plot_every", type=int, default=100)
     parser.add_argument("--s_input", type=str, default='r50')
-    parser.add_argument("--c_feature", action="store_true")
+    parser.add_argument("-- ", action="store_true")
     parser.add_argument("--c_pretrained", action="store_true")
+    parser.add_argument("--c_feature", action="store_true")
     parser.add_argument("--planar_ratio", type=float, default=0.0, help="Learning rate")
     parser.add_argument("--early_exit", action="store_true")
+    parser.add_argument("--depth", action="store_true")
+    parser.add_argument("--classifier", action="store_true")
     args = parser.parse_args()
     # if args.feature:
     print(args)
     if args.s_input == 'r50':
         data_folder = '../ShapeNet/feature'
     elif args.s_input == 'r18_1conv':
-        data_folder = '../ShapeNet/feature_18_1stconv'
+        data_folder = '../ShapeNet/feature_18_1conv'
     train_paths = dataset.load_feature_paths(data_folder, 'train', args.data_per_class, args.planar_ratio)
     if args.s_input or args.c_feature:
         test_paths = dataset.load_feature_paths(data_folder, 'test', args.data_per_class)

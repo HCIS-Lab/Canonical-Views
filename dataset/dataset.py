@@ -4,7 +4,9 @@ from torchvision import transforms
 from PIL import Image
 import os
 import random
-
+import cv2
+import numpy as np
+import torch.nn.functional as F
 
 def in_angle_range(angle, category, offset):
         lower_bound = (category - offset) % 360
@@ -35,7 +37,7 @@ def load_feature_paths(data_folder, split, num_sample, planar_ratio=0.0):
     feature_paths = {}
     class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
     for class_idx, class_name in enumerate(class_list):
-        folder_path = os.path.join(data_folder, class_name, class_name, split)
+        folder_path = os.path.join(data_folder, class_name, split)
         instances = os.listdir(folder_path)
         feature_paths[class_name] = []
         # for ins in instances:
@@ -148,6 +150,70 @@ class ImageDataset(Dataset):
                 'rot': rot,
                 'rot_input': rot_input,
                 'planar': bool(self.check_angles(x, y, z))}
+
+
+class DepthDataset(Dataset):
+    def __init__(self, image_paths, labels, transform=None, load_depth=False):
+        transform = transforms.Compose([
+        transforms.Resize((224, 224)),  # Resize to 224x224
+        # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # Color augmentation
+        transforms.ToTensor(),  # Convert to tensor
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+    ])
+        self.image_paths = image_paths
+        self.labels = labels
+        self.transform = transform
+
+    def in_angle_range(self, angle, category, offset):
+        lower_bound = (category - offset) % 360
+        upper_bound = (category + offset) % 360
+        if lower_bound < upper_bound:
+            return lower_bound <= angle <= upper_bound
+        else:
+            return angle >= lower_bound or angle <= upper_bound  # Wraps around 360
+
+    def check_angles(self, x, y, z):
+        offset = 15
+        categories = [
+            0,
+            90,
+            180,
+            270
+        ]
+        planar = [False]*3
+        for i, angle in enumerate([x, y, z]):
+            for cat in categories:
+                if self.in_angle_range(int(angle), cat, offset):
+                    planar[i] = True
+                    break
+
+        return all(planar)
+
+    def __len__(self):
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert("RGB")
+        if self.transform:
+            image = self.transform(image)
+        label = self.labels[idx]
+
+        file_name = os.path.basename(img_path)
+        attrbutes = file_name.split('_')
+        class_name, id, x, y, z = attrbutes[0], attrbutes[1], attrbutes[2], attrbutes[3], attrbutes[4]
+
+        rot_input = [float(x)/180., float(y)/180., float(z)/180.]
+        rot_input = torch.tensor(rot_input)
+
+        rot = x+'_'+y+'_'+z
+        return {'feature': image,
+                'label': label,
+                'class_name': class_name,
+                'id': id,
+                'rot': rot,
+                'rot_input': rot_input,
+                'planar': bool(self.check_angles(x, y, z))}
         
 
 class FeatureDataset(Dataset):
@@ -199,7 +265,7 @@ class FeatureDataset(Dataset):
         image_file_path = self.feature_paths[idx].split('/')
         image_file_path[-1] = image_file_path[-1].replace('.pt', '')
         
-        image_file_path.pop(-6)
+        # image_file_path.pop(-6)
         image_file_path.pop(-6)
         image_file_path = os.path.join(*image_file_path)
 
@@ -212,17 +278,136 @@ class FeatureDataset(Dataset):
                 'planar': bool(self.check_angles(x, y, z)),
                 'image_path': os.path.join(image_file_path)}
 
+class DepthFeatureDataset(Dataset):
+    def __init__(self, feature_paths, labels, load_depth=False):
+        self.feature_paths = feature_paths
+        self.labels = labels
+        self.load_depth = load_depth
+    def in_angle_range(self, angle, category, offset):
+        lower_bound = (category - offset) % 360
+        upper_bound = (category + offset) % 360
+        if lower_bound < upper_bound:
+            return lower_bound <= angle <= upper_bound
+        else:
+            return angle >= lower_bound or angle <= upper_bound  # Wraps around 360
+
+    def check_angles(self, x, y, z):
+        offset = 15
+        categories = [
+            0,
+            90,
+            180,
+            270
+        ]
+        planar = [False]*3
+        for i, angle in enumerate([x, y, z]):
+            for cat in categories:
+                if self.in_angle_range(int(angle), cat, offset):
+                    planar[i] = True
+                    break
+
+        return all(planar)
+
+    def __len__(self):
+        return len(self.feature_paths)
+    
+    def __getitem__(self, idx):
+        feature = torch.load(self.feature_paths[idx]).squeeze()
+        label = self.labels[idx]
+        file_name = os.path.basename(self.feature_paths[idx])
+        attrbutes = file_name.split('_')
+        class_name, id, x, y, z, view = attrbutes[0], attrbutes[1], attrbutes[2], attrbutes[3], attrbutes[4], attrbutes[5].split('.')[0]
+
+        rot_input = [float(x)/180., float(y)/180., float(z)/180.]
+        rot_input = torch.tensor(rot_input)
+
+        rot = x+'_'+y+'_'+z
+        # /nfs/wattrel/data/md0/kung/ShapeNet/airplane/train/1021a0914a7207aff927ed529ad90a11/screenshot/.jpg
+        # /nfs/wattrel/data/md0/kung/ShapeNet/feature/airplane/train/1021a0914a7207aff927ed529ad90a11/screenshot/xxx.pt
+        image_file_path = self.feature_paths[idx].split('/')
+        image_file_path[-1] = image_file_path[-1].replace('.pt', '')
+        
+        image_file_path.pop(-6)
+        image_path = os.path.join(*image_file_path)
+
+        image_file_path[-1] = image_file_path[-1].replace('jpg', 'png')
+        image_file_path.insert(-5, "depth")
+        depth = os.path.join(*image_file_path)
+        if self.load_depth:
+            depth = Image.open(depth).convert('L')  # Ensure it's in RGB mode
+            depth_transform = GrayscaleDepthToTensor(depth_min=0.0, depth_max=10.0, out_size=(224, 224))
+            depth = depth_transform(depth)  # shape: (1, H, W)
+
+            return {'feature': feature,
+                    'label': label,
+                    'class_name': class_name,
+                    'id': id,
+                    'rot': rot,
+                    'rot_input': rot_input,
+                    'planar': bool(self.check_angles(x, y, z)),
+                    'image_path': os.path.join(image_path),
+                    'depth': depth
+                    }
+        else:
+            return {'feature': feature,
+                    'label': label,
+                    'class_name': class_name,
+                    'id': id,
+                    'rot': rot,
+                    'rot_input': rot_input,
+                    'planar': bool(self.check_angles(x, y, z)),
+                    'image_path': os.path.join(image_path),
+                    'depth_path': depth
+                    }
+class GrayscaleDepthToTensor(object):
+    def __init__(self, depth_min=0.0, depth_max=10.0, out_size=(224, 224)):
+        """
+        Args:
+            depth_min (float): Minimum depth value expected in meters.
+            depth_max (float): Maximum depth value expected in meters.
+            out_size (tuple): (height, width) to resize depth to (default 224x224)
+        """
+        self.depth_min = depth_min
+        self.depth_max = depth_max
+        self.out_size = out_size
+
+    def __call__(self, depth_pil):
+        """
+        Args:
+            depth_pil (PIL.Image): 8-bit grayscale image loaded with convert('L')
+
+        Returns:
+            torch.Tensor: Tensor of shape (1, H, W) with depth values in meters
+        """
+        # Convert PIL grayscale [0,255] → float tensor [0.0, 1.0]
+        depth_tensor = transforms.ToTensor()(depth_pil).squeeze(0)  # shape: (H, W)
+
+        # Rescale to real-world depth range [depth_min, depth_max]
+        depth_tensor = depth_tensor * (self.depth_max - self.depth_min) + self.depth_min
+
+        # Resize to (1, H_out, W_out)
+        depth_tensor = depth_tensor.unsqueeze(0)  # (1, H, W)
+        depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=self.out_size, mode='bilinear', align_corners=False)
+        return depth_tensor.squeeze(0)  # (1, H_out, W_out)
+
+
 class SelectedDataset:
-    def __init__(self, features, labels, batch_size):
+    def __init__(self, features, labels, batch_size, depth=None):
         self.features = features
         self.labels = labels
         self.batch_size = batch_size
+        self.depth = depth
         self.shuffle()
     
     def shuffle(self):
-        combined = list(zip(self.features, self.labels))
-        random.shuffle(combined)
-        self.features, self.labels = zip(*combined)
+        if self.depth == None:
+            combined = list(zip(self.features, self.labels))
+            random.shuffle(combined)
+            self.features, self.labels = zip(*combined)
+        else:
+            combined = list(zip(self.features, self.labels, self.depth))
+            random.shuffle(combined)
+            self.features, self.labels, self.depth = zip(*combined)
     
     def __len__(self):
         return len(self.features)
@@ -231,19 +416,52 @@ class SelectedDataset:
         for i in range(0, len(self.features), self.batch_size):
             batch_features = self.features[i:i + self.batch_size]
             batch_labels = self.labels[i:i + self.batch_size]
-            yield {'feature': batch_features, 'label': batch_labels}
+            if self.depth == None:
+                yield {'feature': batch_features, 'label': batch_labels}
+            else:
+                batch_depth = []
+                for depth_path in self.depth[i:i + self.batch_size]:
+                    depth = Image.open(depth_path).convert('L')  # Ensure it's in RGB mode
+                    depth_transform = GrayscaleDepthToTensor(depth_min=0.0, depth_max=10.0, out_size=(224, 224))
+
+                    depth_tensor = depth_transform(depth)  # shape: (1, H, W)
+
+                    # depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32)
+
+                    # depth = self.transform(depth)  # Apply the given transformation
+                    batch_depth.append(depth_tensor)
+                
+                batch_depth = torch.stack(batch_depth)  # Stack tensors to form a batch
+                batch_labels = torch.tensor(batch_labels)  # Convert labels to tensor
+
+                yield {'feature': batch_features, 'label': batch_labels, 'depth': batch_depth}
+
 
 class SelectedImageDataset:
     def __init__(self, image_paths, labels, batch_size):
         self.image_paths = image_paths
         self.labels = labels
         self.batch_size = batch_size
+    #     self.transform = transforms.Compose([
+    #     transforms.Resize((224, 224)),  # Resize to 224x224
+    #     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # Color augmentation
+    #     transforms.ToTensor(),  # Convert to tensor
+    #     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+    # ])
         self.transform = transforms.Compose([
-        transforms.Resize((224, 224)),  # Resize to 224x224
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # Color augmentation
-        transforms.ToTensor(),  # Convert to tensor
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
-    ])
+                        transforms.RandomResizedCrop(224, scale=(0.5, 1.0)),  # Random crop and resize
+                        transforms.RandomHorizontalFlip(p=0.5),               # Random horizontal flip
+                        transforms.RandomRotation(degrees=10),                # Random rotation
+                        transforms.ColorJitter(
+                            brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),  # More intense color jitter
+                        transforms.RandomAffine(
+                            degrees=0, translate=(0.05, 0.05), scale=(0.95, 1.05), shear=5),  # Small affine transforms
+                        transforms.GaussianBlur(kernel_size=3),               # Slight blur
+                        transforms.ToTensor(),                                # Convert to tensor
+                        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                             std=[0.229, 0.224, 0.225])        # Normalize
+                    ])
+
         self.shuffle()
     
     def shuffle(self):
