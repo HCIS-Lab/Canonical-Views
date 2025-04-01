@@ -28,11 +28,13 @@ def plot_and_save_acc(acc_dict, episodes, folder_path, plot_every):
     episode_list = episode_list[::plot_every]
     top1_acc = [acc_dict[episode]['top-1'] for episode in episode_list]
     top5_acc = [acc_dict[episode]['top-5'] for episode in episode_list]
+    mae = [acc_dict[episode]['mae'] for episode in episode_list]
     # Create the plot
 
     plt.figure(figsize=(10, 6))
     plt.plot(episode_list, top1_acc, marker='o', label='Top-1 Accuracy')
     plt.plot(episode_list, top5_acc, marker='o', label='Top-5 Accuracy')
+    plt.plot(episode_list, mae, marker='o', label='MAE')
 
     # Customize the plot
     plt.xlabel('Episode')

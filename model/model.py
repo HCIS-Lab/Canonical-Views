@@ -32,6 +32,14 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True, warn_only=True)
 
+def initialize_fixed_edge_model(seed, depth, feature):
+    set_seed(seed)  # Ensure deterministic behavior for this model
+    if not feature:
+        fixed_model = EdgeClassifier(depth)
+    else:
+        fixed_model = FeatureClassifierDepth(depth=depth)
+    return fixed_model
+
 def initialize_fixed_model(seed=42, feature=True, pretrained=True, depth=False, classifier=False):
     set_seed(seed)  # Ensure deterministic behavior for this model
     if feature:
@@ -111,6 +119,51 @@ class ScoreNetwork(nn.Module):
         # Fully Connected Output
         x = self.fc(x)  # Shape: [batch_size, 1]
 
+        return x.squeeze()
+
+class EdgeScoreNetwork(nn.Module):
+    def __init__(self, input_dim, s_input='r50'):
+        super(EdgeScoreNetwork, self).__init__()
+        # First 1x1 convolution to reduce dimensionality (2048 -> 1024)
+        # resnet18 = models.resnet18(pretrained=False)
+
+        # # Modify the first conv layer to take 1 input channel (Canny edges)
+        # resnet18.conv1 = nn.Conv2d(
+        #     in_channels=1,             # single-channel input
+        #     out_channels=64,
+        #     kernel_size=7,
+        #     stride=2,
+        #     padding=3,
+        #     bias=False
+        # )
+        # resnet18.fc = nn.Linear(resnet18.fc.in_features, 1)
+        # self.model = resnet18
+
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),  # input: (1, H, W)
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2),  # -> (16, H/2, W/2)
+            
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),  # -> (32, H/4, W/4)
+            
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1)),  # -> (64, 1, 1)
+        )
+
+        self.classifier = nn.Linear(64, 1)  # Output: dim=1
+
+
+    def forward(self, x):
+        # x = self.model(x)
+        x = self.features(x)
+        x = x.view(x.size(0), -1)  # flatten
+        x = self.classifier(x)
         return x.squeeze()
 
 class ImageClassifier(nn.Module):
@@ -203,7 +256,7 @@ class FeatureClassifier(nn.Module):
         return x.squeeze()
 
 class FeatureClassifierDepth(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self, num_classes=10, depth=False):
         super(FeatureClassifierDepth, self).__init__()
         self.conv1 = nn.Conv2d(2048, 1024, kernel_size=1)
         self.bn1 = nn.BatchNorm2d(1024)
@@ -248,6 +301,62 @@ class FeatureClassifierDepth(nn.Module):
 
         return x.squeeze(), depth
 
+class EdgeClassifier(nn.Module):
+    def __init__(self, s_input='r50', depth=False):
+        super(EdgeClassifier, self).__init__()
+        self.depth = depth
+        if depth:
+            self.features = nn.Sequential(
+                nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),  # input: (1, H, W)
+                nn.BatchNorm2d(16),
+                nn.ReLU(),
+                nn.MaxPool2d(2),  # -> (16, H/2, W/2)
+                
+                nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.MaxPool2d(2),  # -> (32, H/4, W/4)
+                
+                nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+            )
+            self.decoder = DepthDecoder(64, out_size=(128, 128))
+            self.pool = nn.AdaptiveAvgPool2d((1, 1)),  # -> (64, 1, 1)
+        else:
+            self.features = nn.Sequential(
+                nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),  # input: (1, H, W)
+                nn.BatchNorm2d(16),
+                nn.ReLU(),
+                nn.MaxPool2d(2),  # -> (16, H/2, W/2)
+                
+                nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.MaxPool2d(2),  # -> (32, H/4, W/4)
+                
+                nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool2d((1, 1)),  # -> (64, 1, 1)
+            )
+        self.classifier = nn.Linear(64, 10)  # Output: dim=1
+
+    def forward(self, x):
+        # x = self.model(x)
+        if not self.depth:
+            x = self.features(x)
+            x = x.view(x.size(0), -1)  # flatten
+            x = self.classifier(x)
+            depth = None
+        else:
+            x = self.features(x)
+            depth = self.depth_decoder(x)
+            depth = self.sigmoid(depth)
+            x = self.global_avg_pool(x)  # Shape: [batch_size, 512, 1, 1]
+            x = torch.flatten(x, 1)      # Shape: [batch_size, 512]
+            x = self.classifier(x)  # Shape: [batch_size, 1]
+        return x.squeeze(), depth
 
 class DepthDecoder(nn.Module):
     def __init__(self, in_channels, out_size=(224, 224)):

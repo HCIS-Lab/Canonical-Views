@@ -88,6 +88,22 @@ def load_image_paths(data_folder, split, num_sample):
 
     return image_paths
 
+def load_edge_paths(data_folder, split, num_sample):
+    image_paths = {}
+    class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
+    for class_idx, class_name in enumerate(class_list):
+        folder_path = os.path.join(data_folder, class_name, split)
+        instances = os.listdir(folder_path)
+        image_paths[class_name] = []
+        # for ins in instances:
+        ins = instances[0]
+        instances_path = os.path.join(folder_path, ins, 'screenshot')
+        files = [os.path.join(instances_path, f) for f in os.listdir(instances_path) if os.path.isfile(os.path.join(instances_path, f)) and f.endswith(".png")]
+        files = files[:num_sample]
+        image_paths[class_name] = files
+
+    return image_paths
+
 class ImageDataset(Dataset):
     def __init__(self, image_paths, labels, transform=None):
         transform = transforms.Compose([
@@ -215,6 +231,89 @@ class DepthDataset(Dataset):
                 'rot_input': rot_input,
                 'planar': bool(self.check_angles(x, y, z))}
         
+class EdgeDataset(Dataset):
+    def __init__(self, image_paths, labels, transform=None, load_depth=False, load_feature=False):
+        transform = transforms.Compose([
+        transforms.Resize((128, 128)),  # Resize to 224x224
+        transforms.Grayscale(num_output_channels=1),  # just in case
+        transforms.ToTensor(),  # Convert to tensor
+    ])
+        self.image_paths = image_paths
+        self.labels = labels
+        self.transform = transform
+        self.load_depth = load_depth
+        self.load_feature = load_feature
+
+    def in_angle_range(self, angle, category, offset):
+        lower_bound = (category - offset) % 360
+        upper_bound = (category + offset) % 360
+        if lower_bound < upper_bound:
+            return lower_bound <= angle <= upper_bound
+        else:
+            return angle >= lower_bound or angle <= upper_bound  # Wraps around 360
+
+    def check_angles(self, x, y, z):
+        offset = 15
+        categories = [
+            0,
+            90,
+            180,
+            270
+        ]
+        planar = [False]*3
+        for i, angle in enumerate([x, y, z]):
+            for cat in categories:
+                if self.in_angle_range(int(angle), cat, offset):
+                    planar[i] = True
+                    break
+
+        return all(planar)
+
+    def __len__(self):
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path)
+        if self.transform:
+            image = self.transform(image)
+        label = self.labels[idx]
+
+        feature_path = img_path.replace("/edge/", "/feature/")
+        feature_path = feature_path.replace(".png", ".jpg.pt")
+        feature_path = feature_path.replace("_edge", "")
+
+        depth_path = img_path.replace("/edge/", "/depth/")
+        depth_path = depth_path.replace("_edge", "")
+
+        file_name = os.path.basename(img_path)
+        attrbutes = file_name.split('_')
+        class_name, id, x, y, z = attrbutes[0], attrbutes[1], attrbutes[2], attrbutes[3], attrbutes[4]
+
+        rot_input = [float(x)/180., float(y)/180., float(z)/180.]
+        rot_input = torch.tensor(rot_input)
+
+        rot = x+'_'+y+'_'+z
+        out = {'edge': image,
+                'label': label,
+                'class_name': class_name,
+                'id': id,
+                'rot': rot,
+                'rot_input': rot_input,
+                'planar': bool(self.check_angles(x, y, z))
+                }
+        if self.load_feature:
+            out['feature'] = torch.load(feature_path).squeeze()
+        else:
+            out['feature'] = feature_path
+        if self.load_depth:
+            depth = Image.open(depth_path).convert('L')  # Ensure it's in RGB mode
+            depth_transform = GrayscaleDepthToTensor(depth_min=0.0, depth_max=10.0, out_size=(224, 224))
+            depth = depth_transform(depth)  # shape: (1, H, W)
+            out['depth'] = depth
+        else:
+            out['depth'] = depth_path
+        return out
 
 class FeatureDataset(Dataset):
     def __init__(self, feature_paths, labels):
@@ -486,6 +585,71 @@ class SelectedImageDataset:
             batch_labels = torch.tensor(batch_labels)  # Convert labels to tensor
             
             yield {'feature': batch_images, 'label': batch_labels}
+
+            # batch_images = self.image_paths[i:i + self.batch_size]
+            # batch_labels = self.labels[i:i + self.batch_size]
+            # yield {'feature': batch_images, 'label': batch_labels}
+
+
+class SelectedEdgeDataset:
+    def __init__(self, edges, labels,  
+                batch_size,
+                depth_paths=None, feature_paths=None, 
+                load_depth=False, load_feature=False
+                ):
+        
+        self.edges = edges
+        self.labels = labels
+        self.depth_paths = depth_paths
+        self.feature_paths = feature_paths
+        self.batch_size = batch_size
+        if not load_depth:
+            self.depth_paths = [None]*len(self.edges)
+        if not load_feature:
+            self.feature_paths = [None]*len(self.edges)
+        self.shuffle()
+    
+    def shuffle(self):
+        combined = list(zip(self.edges, self.labels, self.depth_paths, self.feature_paths))
+        random.shuffle(combined)
+        self.edges, self.labels, self.depth_paths, self.feature_paths = zip(*combined)
+    
+    def __len__(self):
+        return len(self.edges)
+    
+    def __iter__(self):
+        for i in range(0, len(self.edges), self.batch_size):
+            batch_edges = []
+            batch_depths = []
+            batch_features = []
+            batch_labels = self.labels[i:i + self.batch_size]
+
+            batch_labels = torch.tensor(batch_labels)  # Convert labels to tensor
+            
+            out = {'label': batch_labels}
+
+            if self.depth_paths[0] != None:
+                for depth in self.depth_paths[i:i + self.batch_size]:
+                    depth = Image.open(depth).convert('L')  # Ensure it's in RGB mode
+                    depth_transform = GrayscaleDepthToTensor(depth_min=0.0, depth_max=10.0, out_size=(224, 224))
+                    depth = depth_transform(depth)  # shape: (1, H, W)
+                    batch_depths.append(depth)
+                batch_depths = torch.stack(batch_depths)
+                out['depth'] = batch_depths
+            else:
+                out['depth'] = None
+            if self.feature_paths[0] != None:
+                for feature in self.feature_paths[i:i + self.batch_size]:
+                    batch_features.append(torch.load(feature).squeeze())
+                out['feature'] = batch_features
+                out['edge'] = None
+            else:
+                for img in self.edges[i:i + self.batch_size]:
+                    batch_edges.append(img)
+                batch_edges = torch.stack(batch_edges)  # Stack tensors to form a batch
+                out['edge'] = batch_edges
+                out['feature'] = None
+            yield out
 
             # batch_images = self.image_paths[i:i + self.batch_size]
             # batch_labels = self.labels[i:i + self.batch_size]
