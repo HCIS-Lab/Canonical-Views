@@ -94,7 +94,19 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         score_network = model.ScoreNetwork(args.input_dim, args.s_input).to(device)
     else:
         score_network = model.ScoreRes(args.input_dim).to(device)
-    score_optimizer = optim.Adam(score_network.parameters(), lr=args.lr_rl)
+    
+    # proj = nn.Sequential(
+    #         nn.Linear(500, 1),
+    #         nn.Sigmoid()
+    #     )
+    # score_optimizer = optim.Adam(
+    #         list(score_network.parameters()) + list(proj.parameters()), 
+    #         lr=args.lr_rl
+    #     )
+    score_optimizer = optim.Adam(
+            score_network.parameters(),
+            lr=args.lr_rl
+        )
     
     criterion = nn.CrossEntropyLoss()
     
@@ -192,7 +204,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
                 all_images_paths.append(image_paths[b])
                 # put this sample’s score into the appropriate class list
                 c = labels[b].item()
-                all_scores[c].append(scores[b].cpu())
+                all_scores[c].append(scores[b])
                 
                 # track that the c-th class’s Nth position corresponds 
                 # to global index = len(all_features) - 1
@@ -202,7 +214,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         for c in range(num_classes):
             if len(all_scores[c]) > 0:
                 all_scores[c] = torch.stack(all_scores[c])          # shape = [num_samples_in_class]
-                all_scores[c] = F.gumbel_softmax(all_scores[c], tau=args.tau, hard=False)
+                all_scores[c] = F.softmax(all_scores[c])
 
         # Select top 5 based on scores per class
         selected_features = []
@@ -211,12 +223,14 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         selected_image_paths = []
         selected_local_indices = []  # to help with policy update
         train_view_selection[episode] = {}
+        p_all = {}
         for c in range(num_classes):
             dist_c = all_scores[c]  # shape [Nc]
             if dist_c.nelement() == 0:
                 continue
             # sample, e.g., 5
             sampled_local_idxs = torch.multinomial(dist_c, args.shot, replacement=False)
+            p_all[c] = dist_c[sampled_local_idxs]
 
             # sampled_local_idxs = dist_c.topk(args.shot, dim=0).indices
             # convert those local indices to global
@@ -306,7 +320,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
                 # elif top5_accuracy < episode_acc['worst_top-5']:
                 #     episode_acc['worst_top-5'] = top5_accuracy
 
-        reward = episode_acc[episode]['top-1'] + 0.1 * episode_acc[episode]['top-5']
+        reward = episode_acc[episode]['top-1'] #+ 0.1 * episode_acc[episode]['top-5']
 
         # ===============
         # Policy Gradient Update
@@ -316,17 +330,36 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         score_optimizer.zero_grad()
 
         probs = []
-        for k, v in all_scores.items():
+        for k, v in p_all.items():
             probs.append(v)
-
+        
         probs = torch.stack(probs)
-        log_probs = torch.log(probs)
-        entropy = -(probs * log_probs).sum()
+        log_probs = torch.log(probs + 1e-8)  # for numerical stability
+
+        # Compute mean log-prob across all class-image selections
+        mean_log_prob = log_probs.mean()
+
+        # Compute entropy per row (i.e., per class), then average
+        entropy_per_class = -(probs * log_probs).sum(dim=1)
+        mean_entropy = entropy_per_class.mean()
 
         baseline_reward = 0.9 * baseline_reward + 0.1 * reward if episode > 0 else reward
         advantage = reward - baseline_reward + 1e-8
-        loss = (log_probs * advantage).mean() - args.entropy * entropy
-        print(f"Episode {episode}: Top-1 = {episode_acc[episode]['top-1']:.4f} Top-5 = {episode_acc[episode]['top-5']:.4f} loss = {loss.item():.4f}")
+
+        # Final loss (maximize reward, encourage entropy)
+        loss = mean_log_prob * advantage - args.entropy * mean_entropy
+
+        if episode % 2 == 0:
+            print()
+            print("-------------- probs --------------", probs.shape)
+            print(probs)
+            print()
+            print("-------------- entropy --------------", mean_entropy.shape)
+            print(mean_entropy)
+            print()
+
+
+        print(f"+ Episode {episode}: Top-1 = {episode_acc[episode]['top-1']:.4f} Top-5 = {episode_acc[episode]['top-5']:.4f} loss = {loss.item():.4f}")
         loss.backward()
         score_optimizer.step()
 
@@ -373,15 +406,15 @@ if __name__ == "__main__":
     # if args.feature:
     print(args)
     if args.s_input == 'r50':
-        data_folder = '../ShapeNet/feature'
+        data_folder = '../../kung/ShapeNet/feature'
     elif args.s_input == 'r18_1conv':
-        data_folder = '../ShapeNet/feature_18_1stconv'
+        data_folder = '../../kung/ShapeNet/feature_18_1stconv'
     train_paths = dataset.load_feature_paths(data_folder, 'train', args.data_per_class, args.planar_ratio)
     if args.s_input or args.c_feature:
         test_paths = dataset.load_feature_paths(data_folder, 'test', args.data_per_class)
 
     if not args.s_input or not args.c_feature:
-        data_folder = '../ShapeNet/'
+        data_folder = '../../kung/ShapeNet/'
         train_image_paths = dataset.load_image_paths(data_folder, 'train', args.data_per_class)
         test_image_paths = dataset.load_image_paths(data_folder, 'test', args.data_per_class)
     else:
