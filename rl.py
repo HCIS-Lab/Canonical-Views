@@ -85,6 +85,10 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
 
     stored_folder = os.path.join(root_dir,exp_dir)
     ckp_folder = os.path.join(root_dir,exp_dir)
+    i = 0
+    while os.path.isdir(stored_folder):
+        i+=1
+        stored_folder = stored_folder + '_' + str(i)
     os.makedirs(stored_folder, exist_ok=True)
     os.makedirs(ckp_folder, exist_ok=True)
     store_every_episode = args.num_episode * 0.1
@@ -369,7 +373,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
         if (episode % (args.num_episode // 50) == 0 and episode != 0) or episode == args.num_episode - 1:
             plot_every = args.num_episode // 50
         # if (episode % args.plot_every == 0 and episode!=0) or episode==args.num_episode-1:
-            plot.plot_and_save_acc(episode_acc, episode, stored_folder, args.plot_every)
+            plot.plot_and_save_acc(episode_acc, episode, stored_folder, plot_every)
             plot.plot_view_selcetion(train_view_selection, episode, stored_folder, 'train', plot_every, args.shot)
             plot.plot_view_selcetion(test_view_selection, episode, stored_folder, 'test', plot_every, args.shot)
             # plot.plot_view_distribution(train_view_selection, episode, stored_folder, 'train', args.plot_every, args.shot)
