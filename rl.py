@@ -76,12 +76,16 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
     ckp_dir = 'checkpoints'
     root_dir = 'results'
     os.makedirs(root_dir, exist_ok=True)  # Will create the folder if it doesn't exist
-    exp_dir = 'rl_lr'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
-    + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
-    + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) \
-    +'_s_input' + str(args.s_input) +'_c_feature' + str(args.c_feature) \
-    +'_c_pre' + str(args.c_pretrained) \
-    +'_planar_ratio' + str(args.planar_ratio)
+    
+    if args.log_name != '':
+        exp_dir = 'rl_lr'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
+        + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
+        + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) \
+        +'_s_input' + str(args.s_input) +'_c_feature' + str(args.c_feature) \
+        +'_c_pre' + str(args.c_pretrained) \
+        +'_planar_ratio' + str(args.planar_ratio)
+    else:
+        exp_dir = args.log_name
 
     stored_folder = os.path.join(root_dir,exp_dir)
     ckp_folder = os.path.join(root_dir,exp_dir)
@@ -406,6 +410,7 @@ if __name__ == "__main__":
     parser.add_argument("--c_pretrained", action="store_true")
     parser.add_argument("--planar_ratio", type=float, default=0.0, help="Learning rate")
     parser.add_argument("--early_exit", action="store_true")
+    parser.add_argument("--log_name", type=str, default='')
     args = parser.parse_args()
     # if args.feature:
     print(args)
