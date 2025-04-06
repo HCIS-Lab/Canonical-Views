@@ -77,7 +77,7 @@ def train_rl_selection(train_paths, test_paths, args, num_classes=10, train_imag
     root_dir = 'results'
     os.makedirs(root_dir, exist_ok=True)  # Will create the folder if it doesn't exist
     
-    if args.log_name != '':
+    if args.log_name == '':
         exp_dir = 'rl_lr'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
         + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
         + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) \
