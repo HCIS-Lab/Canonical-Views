@@ -54,6 +54,11 @@ def initialize_fixed_model(seed=42, feature=True, pretrained=True, depth=False, 
             fixed_model = ImageClassifier(pretrained=pretrained)
     return fixed_model
 
+def initialize_fixed_set_model(seed):
+    set_seed(seed)  # Ensure deterministic behavior for this model
+    fixed_model = SetFeatureClassifier()
+    return fixed_model
+
 class ScoreRes(nn.Module):
     def __init__(self, input_dim, rot=False, pretrained=True):
         super(ScoreRes, self).__init__()
@@ -120,6 +125,50 @@ class ScoreNetwork(nn.Module):
         x = self.fc(x)  # Shape: [batch_size, 1]
 
         return x.squeeze()
+
+class ScoreSetNetwork(nn.Module):
+    def __init__(self, input_dim, s_input='r50'):
+        super(ScoreSetNetwork, self).__init__()
+        # First 1x1 convolution to reduce dimensionality (2048 -> 1024)
+        if s_input =='r50':
+            self.fc1 = nn.Linear(2048, 512)
+            self.bn1 = nn.BatchNorm1d(512)
+            self.fc2 = nn.Linear(512, 64)
+            self.bn2 = nn.BatchNorm1d(64)
+            self.fc3 = nn.Linear(64, 8)
+            self.bn3 = nn.BatchNorm1d(8)
+
+            self.agg_fc1 = nn.Linear(800, 200)
+            # self.agg_bn1 = nn.BatchNorm1d(200)
+            self.agg_fc2 = nn.Linear(200, 64)
+            # self.agg_bn2 = nn.BatchNorm1d(64)
+            self.agg_fc3 = nn.Linear(64, 1)
+
+    def forward(self, x):
+        # [1, 100, 2048]
+        b, n, c = x.shape
+        x = x.reshape(b*n, c)
+        # [100, 2048]
+        x = self.fc1(x)
+        x = self.bn1(x)
+        x = torch.relu(x)
+        x = self.fc2(x)
+        x = self.bn2(x)
+        x = torch.relu(x)
+        x = self.fc3(x)
+        x = self.bn3(x)
+        x = torch.relu(x)
+        # [1, 100, 8]
+        x = x.reshape(1, -1)
+        # [1, 800]
+        x = self.agg_fc1(x) 
+        # x = self.agg_bn1(x)
+        x = torch.relu(x)
+        x = self.agg_fc2(x)
+        # x = self.agg_bn2(x)
+        x = torch.relu(x)
+        x = self.agg_fc3(x)
+        return x.squeeze(dim=0)
 
 class EdgeScoreNetwork(nn.Module):
     def __init__(self, input_dim, s_input='r50'):
@@ -254,6 +303,28 @@ class FeatureClassifier(nn.Module):
         x = self.fc(x)  # Shape: [batch_size, 1]
 
         return x.squeeze()
+
+class SetFeatureClassifier(nn.Module):
+    def __init__(self, num_classes=10):
+        super(SetFeatureClassifier, self).__init__()
+
+        # Fully Connected Layer (512 -> 1)
+        self.fc1 = nn.Linear(2048, 1024)
+        self.bn1 = nn.BatchNorm1d(1024)
+        self.fc2 = nn.Linear(1024, 256)
+        self.bn2 = nn.BatchNorm1d(256)
+        self.fc3 = nn.Linear(256, num_classes)
+    
+    def forward(self, x):
+        # Fully Connected Output
+        x = self.fc1(x)  # Shape: [batch_size, 1]
+        x = self.bn1(x)
+        x = torch.relu(x)
+        x = self.fc2(x)
+        x = self.bn2(x)
+        x = torch.relu(x)
+        x = self.fc3(x)
+        return x
 
 class FeatureClassifierDepth(nn.Module):
     def __init__(self, num_classes=10, depth=False):

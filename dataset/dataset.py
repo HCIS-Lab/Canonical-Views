@@ -72,6 +72,110 @@ def load_feature_paths(data_folder, split, num_sample, planar_ratio=0.0):
 
     return feature_paths
 
+
+def load_set_feature_paths(data_folder, split, shot):
+    feature_paths = []
+    planar_ratio = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
+    
+    for i in range(11):
+        p_ratio = int(i*0.1)
+        num_p = int(shot*p_ratio)
+        num_np = int(shot*(1-p_ratio))
+        feature_paths.append({})
+        for class_idx, class_name in enumerate(class_list):
+            folder_path = os.path.join(data_folder, class_name, split)
+            instances = os.listdir(folder_path)
+            feature_paths[-1][class_name] = []
+            # for ins in instances:
+            ins = instances[0]
+            instances_path = os.path.join(folder_path, ins, 'screenshot')
+
+            planar = []
+            non_planar = []
+            
+            for f in os.listdir(instances_path):
+                if os.path.isfile(os.path.join(instances_path, f)) and f.endswith(".pt"):
+                    rot = f.split('.')[0]
+                    rot = rot.split('_')
+                    x, y, z = rot[2], rot[3], rot[4]
+                    if check_angles(x, y, z):
+                        planar.append(os.path.join(instances_path, f))
+                    else:
+                        non_planar.append(os.path.join(instances_path, f))
+            
+            planar = random.sample(planar, num_p)
+            non_planar = random.sample(non_planar, num_np)
+            feature_paths[-1][class_name] = planar + non_planar
+
+    return feature_paths
+
+class SetFeatureDataset(Dataset):
+    def __init__(self, feature_paths, split='train'):
+        self.feature_paths = feature_paths
+        self.split = split
+
+        if self.split == 'test':
+            class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
+            path_list = []
+            label_list = []
+            for img_set in self.feature_paths:
+                for i, class_name in enumerate(class_list):
+                    for image_path in img_set[class_name]:
+                        path_list.append(image_path)
+                        label_list.append(i)
+            self.feature_paths = path_list
+            self.labels = label_list
+
+
+
+    def __len__(self):
+        return len(self.feature_paths)
+    
+    def __getitem__(self, idx):
+        if self.split == 'train':
+            class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
+            path_set = self.feature_paths[idx]
+            feature = []
+            label = []
+            for i, class_name in enumerate(class_list):
+                for img_path in path_set[class_name]:
+                    feature.append(torch.load(img_path).squeeze())
+                    label.append(i)
+            feature = torch.stack(feature)
+            label = torch.tensor(label)
+            return {'feature': feature,
+                    'label': label,
+                    }
+        else:
+            feature = torch.load(self.feature_paths[idx]).squeeze()
+            label = torch.tensor(self.labels[idx])
+            return {'feature': feature,
+                    'label': label,
+                    }
+
+class SelectedSetDataset:
+    def __init__(self, features, labels, batch_size):
+        self.features = features
+        self.labels = labels
+        self.batch_size = batch_size
+        self.shuffle()
+    
+    def shuffle(self):
+        combined = list(zip(self.features, self.labels))
+        random.shuffle(combined)
+        # self.features, self.labels = zip(*combined)
+        self.features, self.labels = map(list, zip(*combined))
+
+    def __len__(self):
+        return len(self.features)
+    
+    def __iter__(self):
+        for i in range(0, len(self.features), self.batch_size):
+            batch_features = self.features[i:i + self.batch_size]
+            batch_labels = self.labels[i:i + self.batch_size]
+            yield {'feature': batch_features, 'label': batch_labels}
+
 def load_image_paths(data_folder, split, num_sample):
     image_paths = {}
     class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
@@ -87,6 +191,56 @@ def load_image_paths(data_folder, split, num_sample):
         image_paths[class_name] = files
 
     return image_paths
+
+def load_image_dict(data_folder, split, num_sample):
+    image_dict = {}
+    class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
+    for class_idx, class_name in enumerate(class_list):
+        folder_path = os.path.join(data_folder, class_name, split)
+        instances = os.listdir(folder_path)
+        image_dict[class_name] = {}
+        # for ins in instances:
+        ins = instances[0]
+        instances_path = os.path.join(folder_path, ins, 'screenshot')
+        files = [os.path.join(instances_path, f) for f in os.listdir(instances_path) if os.path.isfile(os.path.join(instances_path, f)) and f.endswith(".jpg")]
+        files.sort()
+        files = files[:num_sample]
+        image_dict[class_name]['image'] = files
+        rot = []
+        for file in files:
+            file_name = os.path.basename(file)
+            attrbutes = file_name.split('_')
+            class_name, id, x, y, z = attrbutes[0], attrbutes[1], attrbutes[2], attrbutes[3], attrbutes[4]
+
+            rot_input = [(float(x)-180)/180., (float(y)-180)/180., (float(z)-180)/180.]
+            rot_input = torch.tensor(rot_input)
+            rot.append(rot_input)
+        image_dict[class_name]['rot'] = rot
+
+    return image_dict
+
+class ActionDataset(Dataset):
+    def __init__(self, feature, labels, test=False):
+        self.feature = feature
+        self.labels = labels
+        self.test = test
+        self.transform = transforms.Compose([
+        transforms.Resize((128, 128)),
+        transforms.ToTensor()
+    ])
+    def __len__(self):
+        return len(self.feature)
+    
+    def __getitem__(self, idx):
+        if self.test:
+            feature = Image.open(self.feature[idx]).convert("RGB")
+            feature = self.transform(feature)
+        else:
+            feature = self.feature[idx]
+        label = self.labels[idx]
+        return feature, label
+
+
 
 def load_edge_paths(data_folder, split, num_sample):
     image_paths = {}
@@ -376,6 +530,8 @@ class FeatureDataset(Dataset):
                 'rot_input': rot_input,
                 'planar': bool(self.check_angles(x, y, z)),
                 'image_path': os.path.join(image_file_path)}
+
+
 
 class DepthFeatureDataset(Dataset):
     def __init__(self, feature_paths, labels, load_depth=False):
