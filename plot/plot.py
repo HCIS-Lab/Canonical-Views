@@ -93,6 +93,33 @@ def plot_view_selcetion(view_selection, episodes, folder_path, split, plot_every
 
     # Save the plot (optional)
     plt.savefig(os.path.join(folder_path, split+'_view_over_episode.png'), dpi=300, bbox_inches='tight')
+
+def plot_set_selcetion(set_selection, episodes, folder_path, split, plot_every, shot):
+
+    episode_list = list(set_selection.keys())
+    episode_list.sort()
+    x_axis = []
+    list_p = []
+    for episode in episode_list:
+        list_p.append(float(set_selection[episode]*0.1))
+        x_axis.append(str(episode))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(x_axis, list_p, marker='o', label='planar')
+
+    # Add labels and title
+    plt.xlabel('Episode')
+    plt.ylabel('planar ratio')
+    plt.title('View Over Episodes')
+
+    # Add a legend to distinguish between the metrics
+    plt.legend()
+
+    # Optional: add grid for better readability
+    plt.grid(True)
+
+    # Save the plot (optional)
+    plt.savefig(os.path.join(folder_path, split+'_view_over_episode.png'), dpi=300, bbox_inches='tight')
     
 def plot_view_distribution(view_selection, episode, folder_path, split, plot_every, shot):
 

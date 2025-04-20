@@ -43,6 +43,7 @@ class RotationPolicy(nn.Module):
         std = self.log_std.exp().expand_as(mu)
         dist = torch.distributions.Normal(mu, std)
         action = dist.rsample()
+        action = action.clamp(-1, 1)
         log_prob = dist.log_prob(action).sum(dim=-1)
         return action, hidden, log_prob
 
@@ -52,7 +53,7 @@ from torchvision.models import resnet18
 class ResNet18Classifier(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
-        self.backbone = resnet18(pretrained=False)  # Load with ImageNet weights
+        self.backbone = resnet18(pretrained=True)  # Load with ImageNet weights
 
         # Replace final fully-connected layer
         in_features = self.backbone.fc.in_features
