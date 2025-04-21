@@ -39,36 +39,26 @@ class RotationPolicy(nn.Module):
         resnet = models.resnet18(pretrained=False)
         self.cnn = nn.Sequential(*list(resnet.children())[:-1])
         self.lstm = nn.LSTM(input_size=512, hidden_size=hidden_size, batch_first=True)
-        self.mu_head = nn.Sequential(
-            nn.Linear(hidden_size, 64),
-            nn.Tanh()
-        )
+        self.fc = nn.Linear(hidden_size, 64)
         self.log_std = nn.Parameter(torch.zeros(1, 3))
         # Predefined action lookup table: 4 options per axis -> 4^3 = 64
-        step_options = [-20, -10, 10, 20]
+        step_options = [-20., -10., 10., 20.]
         import itertools
-        self.action_table = torch.tensor(list(itertools.product(step_options, repeat=3)), dtype=torch.float32)
+        self.action_table = torch.tensor(list(itertools.product(step_options, repeat=3)), dtype=torch.float32).cuda()
 
     def forward(self, images, hidden):
         batch_size = images.size(0)
         x = self.cnn(images).view(batch_size, 1, -1)  # [B, 1, 64]
         lstm_out, hidden = self.lstm(x, hidden)
         h = lstm_out.squeeze(1)
-        mu = self.mu_head(h)
+        logits = self.fc(h)
         probs = F.softmax(logits, dim=-1)
         dist = torch.distributions.Categorical(probs)
         action_idx = dist.sample()  # [B]
-        selected_rot = self.action_table[action_idx] * torch.pi / 180  # degrees to radians
+
+        selected_rot = self.action_table[action_idx] / 180.  # degrees to radians
         log_prob = dist.log_prob(action_idx)
         return selected_rot.to(images.device), hidden, log_prob
-
-
-        std = self.log_std.exp().expand_as(mu)
-        dist = torch.distributions.Normal(mu, std)
-        action = dist.rsample()
-        action = action.clamp(-1, 1)
-        log_prob = dist.log_prob(action).sum(dim=-1)
-        return action, hidden, log_prob
 
 # ==== Dummy Classifier (Replace with ResNet or other CNN) ====
 from torchvision.models import resnet18
@@ -98,52 +88,39 @@ def random_view(image_dict):
     # [10, 3, h, w], 
     return torch.stack(images), rot
 
-# def next_view(current_view, class_idx, image_dict, current_rot, action):
-
-#     new_x = current_rot[0] + action[0].cpu()
-#     new_y = current_rot[1] + action[1].cpu()
-#     new_z = current_rot[2] + action[2].cpu()
-#     new_rot = [new_x, new_y, new_z]
-
-#     class_name = class_list[class_idx]
-#     rot_list = image_dict[class_name]['rot']
-#     distance = float("inf")
-
-#     for i, rot in enumerate(rot_list):
-#         new_distance = abs(rot[0]-new_x) + abs(rot[1]-new_y) + abs(rot[2]-new_z)
-#         if distance > new_distance:
-#             distance = new_distance
-#             current_view = image_dict[class_name]['image'][i]
-#             new_rot = rot
-#     current_view = Image.open(current_view).convert('RGB')
-#     current_view = transform(current_view)
-#     return current_view, new_rot
-
 def wrap_angle(x):
     if x > 1.0:
         x = -(2.0-x)
     elif x < -1.0:
-        x = -(-2-X)
-    return X
+        x = -(-2-x)
+    return x
+
+def angle_distance(a, b):
+    return min(abs(a - b), 2 - abs(a - b))
+
+def total_angle_distance(rot1, rot2):
+    return sum(angle_distance(rot1[i], rot2[i]) for i in range(3))
 
 def next_view(current_view, class_idx, image_dict, current_rot, action):
     new_rot = [wrap_angle(current_rot[i] + action[i].item()) for i in range(3)]
 
     class_name = class_list[class_idx]
     rot_list = image_dict[class_name]['rot']
-    distance = float("inf")
+    image_list = image_dict[class_name]['image']
 
+    min_dist = float('inf')
+    closest_view = None
+    matched_rot = None
     for i, rot in enumerate(rot_list):
-        new_distance = sum(abs(rot[j] - new_rot[j]) for j in range(3))
-        if distance > new_distance:
-            distance = new_distance
-            current_view = image_dict[class_name]['image'][i]
-            new_rot = rot
+        dist = total_angle_distance(new_rot, rot)
+        if dist < min_dist:
+            min_dist = dist
+            closest_view = image_list[i]
+            matched_rot = rot
 
-    current_view = Image.open(current_view).convert('RGB')
+    current_view = Image.open(closest_view).convert('RGB')
     current_view = transform(current_view)
-    return current_view, new_rot
-
+    return current_view, matched_rot
 
 def train_action(train_dict, test_dict, args, num_classes=10):
 
@@ -151,9 +128,10 @@ def train_action(train_dict, test_dict, args, num_classes=10):
     policy = RotationPolicy().cuda()
     policy.train()
     policy_optim = optim.Adam(policy.parameters(), lr=args.lr_rl)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    policy_optim, mode='max', factor=0.5, patience=5
-)
+    scheduler = torch.optim.lr_scheduler.StepLR(policy_optim, step_size=10, gamma=0.9)
+#     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+#     policy_optim, mode='max', factor=0.5, patience=5
+# )
     baseline_reward = 0
 
     NUM_OBJECTS = 10
@@ -165,10 +143,10 @@ def train_action(train_dict, test_dict, args, num_classes=10):
     test_y = []
     for i, class_name in enumerate(class_list):
         test_x = test_x + test_dict[class_name]['image']
-        test_y = test_y + [torch.tensor(i, dtype=torch.int)]*100
+        test_y = test_y + [torch.tensor(i, dtype=torch.int)]*args.data_per_class
 
     test_dataset = dataset.ActionDataset(test_x, test_y, test=True)
-    test_dataset = DataLoader(test_dataset, batch_size=20, shuffle=False, num_workers=10, pin_memory=True)
+    test_dataset = DataLoader(test_dataset, batch_size=50, shuffle=False, num_workers=10, pin_memory=True)
 
     for episode in range(args.num_episode):
         # all_images = [[] for _ in range(NUM_OBJECTS)]
@@ -281,11 +259,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Five-Shot Training")
     parser.add_argument("--num_episode", type=int, default=500)
     parser.add_argument("--batch_size", type=int, default=10, help="Number of examples per class in each run")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs for training")
+    parser.add_argument("--epochs", type=int, default=12, help="Number of epochs for training")
     parser.add_argument("--lr_rl", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--lr_cls", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--wd_cls", type=float, default=1e-2, help="Learning rate")
-    parser.add_argument("--shot", type=int, default=10)
+    parser.add_argument("--lr_cls", type=float, default=2e-5, help="Learning rate")
+    parser.add_argument("--wd_cls", type=float, default=5e-2, help="Learning rate")
+    parser.add_argument("--shot", type=int, default=5)
     parser.add_argument("--data_per_class", type=int, default=500)
     parser.add_argument("--val_every", type=int, default=5)
     parser.add_argument("--plot_every", type=int, default=100)
