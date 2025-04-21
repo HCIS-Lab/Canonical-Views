@@ -36,19 +36,18 @@ def initialize_fixed_model(seed=50):
 class RotationPolicy(nn.Module):
     def __init__(self, hidden_size=128):
         super().__init__()
-        self.cnn = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1))
-        )
-        self.lstm = nn.LSTM(input_size=64, hidden_size=hidden_size, batch_first=True)
+        resnet = models.resnet18(pretrained=False)
+        self.cnn = nn.Sequential(*list(resnet.children())[:-1])
+        self.lstm = nn.LSTM(input_size=512, hidden_size=hidden_size, batch_first=True)
         self.mu_head = nn.Sequential(
-            nn.Linear(hidden_size, 3),
+            nn.Linear(hidden_size, 64),
             nn.Tanh()
         )
         self.log_std = nn.Parameter(torch.zeros(1, 3))
+        # Predefined action lookup table: 4 options per axis -> 4^3 = 64
+        step_options = [-20, -10, 10, 20]
+        import itertools
+        self.action_table = torch.tensor(list(itertools.product(step_options, repeat=3)), dtype=torch.float32)
 
     def forward(self, images, hidden):
         batch_size = images.size(0)
@@ -56,6 +55,14 @@ class RotationPolicy(nn.Module):
         lstm_out, hidden = self.lstm(x, hidden)
         h = lstm_out.squeeze(1)
         mu = self.mu_head(h)
+        probs = F.softmax(logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
+        action_idx = dist.sample()  # [B]
+        selected_rot = self.action_table[action_idx] * torch.pi / 180  # degrees to radians
+        log_prob = dist.log_prob(action_idx)
+        return selected_rot.to(images.device), hidden, log_prob
+
+
         std = self.log_std.exp().expand_as(mu)
         dist = torch.distributions.Normal(mu, std)
         action = dist.rsample()
@@ -78,7 +85,6 @@ class ResNet18Classifier(nn.Module):
     def forward(self, x):
         return self.backbone(x)
 
-
 def random_view(image_dict):
     images = []
     rot = []
@@ -91,40 +97,6 @@ def random_view(image_dict):
         rot.append(image_dict[class_name]['rot'][random_idx])
     # [10, 3, h, w], 
     return torch.stack(images), rot
-
-def wrap_angle(x):
-    if x > 1.0:
-        x = -(2.0-x)
-    elif x < -1.0:
-        x = -(-2-x)
-    return x
-
-def angle_distance(a, b):
-    return min(abs(a - b), 2 - abs(a - b))
-
-def total_angle_distance(rot1, rot2):
-    return sum(angle_distance(rot1[i], rot2[i]) for i in range(3))
-
-def next_view(current_view, class_idx, image_dict, current_rot, action):
-    new_rot = [wrap_angle(current_rot[i] + action[i].item()) for i in range(3)]
-
-    class_name = class_list[class_idx]
-    rot_list = image_dict[class_name]['rot']
-    image_list = image_dict[class_name]['image']
-
-    min_dist = float('inf')
-    closest_view = None
-    matched_rot = None
-    for i, rot in enumerate(rot_list):
-        dist = total_angle_distance(new_rot, rot)
-        if dist < min_dist:
-            min_dist = dist
-            closest_view = image_list[i]
-            matched_rot = rot
-
-    current_view = Image.open(closest_view).convert('RGB')
-    current_view = transform(current_view)
-    return current_view, matched_rot
 
 # def next_view(current_view, class_idx, image_dict, current_rot, action):
 
@@ -146,6 +118,32 @@ def next_view(current_view, class_idx, image_dict, current_rot, action):
 #     current_view = Image.open(current_view).convert('RGB')
 #     current_view = transform(current_view)
 #     return current_view, new_rot
+
+def wrap_angle(x):
+    if x > 1.0:
+        x = -(2.0-x)
+    elif x < -1.0:
+        x = -(-2-X)
+    return X
+
+def next_view(current_view, class_idx, image_dict, current_rot, action):
+    new_rot = [wrap_angle(current_rot[i] + action[i].item()) for i in range(3)]
+
+    class_name = class_list[class_idx]
+    rot_list = image_dict[class_name]['rot']
+    distance = float("inf")
+
+    for i, rot in enumerate(rot_list):
+        new_distance = sum(abs(rot[j] - new_rot[j]) for j in range(3))
+        if distance > new_distance:
+            distance = new_distance
+            current_view = image_dict[class_name]['image'][i]
+            new_rot = rot
+
+    current_view = Image.open(current_view).convert('RGB')
+    current_view = transform(current_view)
+    return current_view, new_rot
+
 
 def train_action(train_dict, test_dict, args, num_classes=10):
 
@@ -192,6 +190,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
             next_views = []
             next_rot = []
             for i in range(NUM_OBJECTS):
+                # rot = (actions[i] * torch.pi).detach().cpu().numpy()
                 delta_rot = (actions[i])
                 new_image, new_rot = next_view(current_views[i], i, train_dict, current_rot[i], delta_rot)
                 all_images.append(new_image)
