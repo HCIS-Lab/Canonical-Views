@@ -126,27 +126,6 @@ def next_view(current_view, class_idx, image_dict, current_rot, action):
     current_view = transform(current_view)
     return current_view, matched_rot
 
-# def next_view(current_view, class_idx, image_dict, current_rot, action):
-
-#     new_x = current_rot[0] + action[0].cpu()
-#     new_y = current_rot[1] + action[1].cpu()
-#     new_z = current_rot[2] + action[2].cpu()
-#     new_rot = [new_x, new_y, new_z]
-
-#     class_name = class_list[class_idx]
-#     rot_list = image_dict[class_name]['rot']
-#     distance = float("inf")
-
-#     for i, rot in enumerate(rot_list):
-#         new_distance = abs(rot[0]-new_x) + abs(rot[1]-new_y) + abs(rot[2]-new_z)
-#         if distance > new_distance:
-#             distance = new_distance
-#             current_view = image_dict[class_name]['image'][i]
-#             new_rot = rot
-#     current_view = Image.open(current_view).convert('RGB')
-#     current_view = transform(current_view)
-#     return current_view, new_rot
-
 def train_action(train_dict, test_dict, args, num_classes=10):
 
     # ==== Main RL Loop ====
@@ -167,7 +146,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
     test_y = []
     for i, class_name in enumerate(class_list):
         test_x = test_x + test_dict[class_name]['image']
-        test_y = test_y + [torch.tensor(i, dtype=torch.int)]*100
+        test_y = test_y + [torch.tensor(i, dtype=torch.int)]*args.data_per_class
 
     test_dataset = dataset.ActionDataset(test_x, test_y, test=True)
     test_dataset = DataLoader(test_dataset, batch_size=20, shuffle=False, num_workers=10, pin_memory=True)
