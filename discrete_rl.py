@@ -12,8 +12,9 @@ from PIL import Image
 
 class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
 transform = transforms.Compose([
-        transforms.Resize((128, 128)),
-        transforms.ToTensor()
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
 def set_seed(seed: int = 42):
@@ -39,10 +40,9 @@ class RotationPolicy(nn.Module):
         resnet = models.resnet18(pretrained=False)
         self.cnn = nn.Sequential(*list(resnet.children())[:-1])
         self.lstm = nn.LSTM(input_size=512, hidden_size=hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 64)
-        self.log_std = nn.Parameter(torch.zeros(1, 3))
+        self.fc = nn.Linear(hidden_size, 27)
         # Predefined action lookup table: 4 options per axis -> 4^3 = 64
-        step_options = [-20., -10., 10., 20.]
+        step_options = [-15., 0., 15.]
         import itertools
         self.action_table = torch.tensor(list(itertools.product(step_options, repeat=3)), dtype=torch.float32).cuda()
 
@@ -112,6 +112,8 @@ def next_view(current_view, class_idx, image_dict, current_rot, action):
     closest_view = None
     matched_rot = None
     for i, rot in enumerate(rot_list):
+        if rot[0].item() == current_rot[0].item() and rot[1].item() ==current_rot[1].item() and rot[2].item() ==current_rot[2].item():
+            continue
         dist = total_angle_distance(new_rot, rot)
         if dist < min_dist:
             min_dist = dist
@@ -146,22 +148,25 @@ def train_action(train_dict, test_dict, args, num_classes=10):
         test_y = test_y + [torch.tensor(i, dtype=torch.int)]*args.data_per_class
 
     test_dataset = dataset.ActionDataset(test_x, test_y, test=True)
-    test_dataset = DataLoader(test_dataset, batch_size=50, shuffle=False, num_workers=10, pin_memory=True)
+    test_dataset = DataLoader(test_dataset, batch_size=100, shuffle=False, num_workers=10, pin_memory=True)
 
     for episode in range(args.num_episode):
         # all_images = [[] for _ in range(NUM_OBJECTS)]
         all_images = []
+        all_labels = []
         # all_rot = [[] for _ in range(NUM_OBJECTS)]
         all_rot = []
         hidden = (torch.zeros(1, NUM_OBJECTS, 128).cuda(), torch.zeros(1, NUM_OBJECTS, 128).cuda())
         current_views, current_rot = random_view(train_dict)
         for i in range(NUM_OBJECTS):
             all_images.append(current_views[i])
+            all_rot.append(current_rot[i])
+            all_labels.append(float(i))
         current_views = current_views.cuda()
         all_actions = []  # Store actions over all steps
 
         log_probs = []
-        for step in range(NUM_STEPS):
+        for step in range(NUM_STEPS-1):
             actions, hidden, log_prob = policy(current_views, hidden)
             log_probs.append(log_prob)
 
@@ -175,6 +180,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
                 next_views.append(new_image)
                 all_rot.append(new_rot)
                 next_rot.append(new_rot)
+                all_labels.append(float(i))
             current_views = torch.stack(next_views).cuda()
             current_rot = next_rot
         rot_episode[episode] = all_rot
@@ -184,15 +190,11 @@ def train_action(train_dict, test_dict, args, num_classes=10):
         clf_opt = optim.Adam(classifier.parameters(), lr=args.lr_cls, weight_decay=args.wd_cls)
         criterion = nn.CrossEntropyLoss()
 
-        train_labels = []
-        for i in range(NUM_OBJECTS):
-            for j in range(args.shot):
-                train_labels.append(float(i))
-        combined = list(zip(all_images, train_labels))
+        combined = list(zip(all_images, all_labels))
         random.shuffle(combined)
         train_x, train_y = zip(*combined)
         train_dataset = dataset.ActionDataset(train_x, train_y)
-        train_dataset = DataLoader(train_dataset, batch_size=20, shuffle=True, num_workers=10, pin_memory=True)
+        train_dataset = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=10, pin_memory=True)
         classifier.train()
         for i in range(args.epochs):  # few epochs
             for x, y in train_dataset:
@@ -259,9 +261,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Five-Shot Training")
     parser.add_argument("--num_episode", type=int, default=500)
     parser.add_argument("--batch_size", type=int, default=10, help="Number of examples per class in each run")
-    parser.add_argument("--epochs", type=int, default=12, help="Number of epochs for training")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs for training")
     parser.add_argument("--lr_rl", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--lr_cls", type=float, default=2e-5, help="Learning rate")
+    parser.add_argument("--lr_cls", type=float, default=1e-5, help="Learning rate")
     parser.add_argument("--wd_cls", type=float, default=5e-2, help="Learning rate")
     parser.add_argument("--shot", type=int, default=5)
     parser.add_argument("--data_per_class", type=int, default=500)
@@ -274,5 +276,5 @@ if __name__ == "__main__":
     data_folder = '../ShapeNet/'
     
     train_image_dict = dataset.load_image_dict(data_folder, 'train', args.data_per_class)
-    test_image_dict = dataset.load_image_dict(data_folder, 'test', 100)
+    test_image_dict = dataset.load_image_dict(data_folder, 'test', args.data_per_class)
     train_action(train_image_dict, test_image_dict, args, 10)
