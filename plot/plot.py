@@ -51,12 +51,9 @@ def plot_and_save_acc(acc_dict, episodes, folder_path, plot_every):
 
 
 def in_angle_range(angle, category, offset):
-        lower_bound = (category - offset) % 360
-        upper_bound = (category + offset) % 360
-        if lower_bound < upper_bound:
-            return lower_bound <= angle <= upper_bound
-        else:
-            return angle >= lower_bound or angle <= upper_bound  # Wraps around 360
+        lower_bound = (category - offset) 
+        upper_bound = (category + offset)
+        return lower_bound <= angle <= upper_bound
 
 def check_angles(view):
     x, y, z = view

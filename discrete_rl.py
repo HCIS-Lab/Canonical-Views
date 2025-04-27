@@ -60,7 +60,9 @@ class RotationPolicy(nn.Module):
 
         selected_rot = self.action_table[action_idx] / 180.  # degrees to radians
         log_prob = dist.log_prob(action_idx)
-        return selected_rot.to(images.device), hidden, log_prob
+        entropy = dist.entropy().mean()
+
+        return selected_rot.to(images.device), hidden, log_prob, entropy
 
 # ==== Dummy Classifier (Replace with ResNet or other CNN) ====
 from torchvision.models import resnet18
@@ -142,6 +144,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
     policy.train()
     policy_optim = optim.Adam(policy.parameters(), lr=args.lr_rl)
     scheduler = torch.optim.lr_scheduler.StepLR(policy_optim, step_size=10, gamma=0.9)
+    torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
 
     baseline_reward = 0
 
@@ -149,7 +152,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
     NUM_STEPS = args.shot
     NUM_CLASSES = 10  # Change depending on task
     rot_episode = {}
-
+    all_adv = []
     test_x = []
     test_y = []
     for i, class_name in enumerate(class_list):
@@ -163,6 +166,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
         # all_images = [[] for _ in range(NUM_OBJECTS)]
         all_images = []
         all_labels = []
+        all_entropy = []
         # all_rot = [[] for _ in range(NUM_OBJECTS)]
         all_rot = []
         hidden = (torch.zeros(1, NUM_OBJECTS, 128).cuda(), torch.zeros(1, NUM_OBJECTS, 128).cuda())
@@ -176,8 +180,9 @@ def train_action(train_dict, test_dict, args, num_classes=10):
 
         log_probs = []
         for step in range(NUM_STEPS-1):
-            actions, hidden, log_prob = policy(current_views, hidden)
+            actions, hidden, log_prob, entropy = policy(current_views, hidden)
             log_probs.append(log_prob)
+            all_entropy.append(entropy)
 
             next_views = []
             next_rot = []
@@ -256,8 +261,10 @@ def train_action(train_dict, test_dict, args, num_classes=10):
 
         # Aggregate all actions for policy gradient loss
         log_probs_tensor = torch.stack(log_probs)
+
+        entropy = torch.stack(all_entropy).sum(dim=-1).mean()
         # total_log_prob = log_probs_tensor.sum()
-        loss = -(log_probs_tensor.sum() * advantage.detach())
+        loss = -(log_probs_tensor.sum() * advantage.detach()) - 0.01*entropy
         # loss = -advantage * total_log_prob
         policy_optim.zero_grad()
         loss.backward()
