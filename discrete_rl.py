@@ -9,7 +9,9 @@ import argparse
 import dataset.dataset as dataset
 from torch.utils.data import DataLoader, Dataset
 from PIL import Image
-
+import time
+import plot.plot as plot
+import os
 class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
 transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -76,10 +78,12 @@ class ResNet18Classifier(nn.Module):
         return self.backbone(x)
 
 def random_view(image_dict):
+
     images = []
     rot = []
     for i, class_name in enumerate(class_list):
         all_images = image_dict[class_name]['image']
+        random.seed(time.time())  # or time.time_ns()
         random_idx = random.randint(0, len(all_images)-1)
         image = Image.open(all_images[random_idx]).convert('RGB')
         image = transform(image)
@@ -126,14 +130,19 @@ def next_view(current_view, class_idx, image_dict, current_rot, action):
 
 def train_action(train_dict, test_dict, args, num_classes=10):
 
+    root_dir = 'results'
+    os.makedirs(root_dir, exist_ok=True)  # Will create the folder if it doesn't exist
+    exp_dir = 'discrete_'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
+    + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
+    + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) 
+    exp_dir = os.path.join(root_dir, exp_dir)
+    os.makedirs(exp_dir, exist_ok=True)
     # ==== Main RL Loop ====
     policy = RotationPolicy().cuda()
     policy.train()
     policy_optim = optim.Adam(policy.parameters(), lr=args.lr_rl)
     scheduler = torch.optim.lr_scheduler.StepLR(policy_optim, step_size=10, gamma=0.9)
-#     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-#     policy_optim, mode='max', factor=0.5, patience=5
-# )
+
     baseline_reward = 0
 
     NUM_OBJECTS = 10
@@ -246,9 +255,10 @@ def train_action(train_dict, test_dict, args, num_classes=10):
         advantage = reward - baseline_reward + 1e-8
 
         # Aggregate all actions for policy gradient loss
-        log_probs_tensor = torch.stack(log_probs)  # [NUM_STEPS, NUM_OBJECTS]
-        total_log_prob = log_probs_tensor.sum()
-        loss = -advantage * total_log_prob
+        log_probs_tensor = torch.stack(log_probs)
+        # total_log_prob = log_probs_tensor.sum()
+        loss = -(log_probs_tensor.sum() * advantage.detach())
+        # loss = -advantage * total_log_prob
         policy_optim.zero_grad()
         loss.backward()
         policy_optim.step()
@@ -256,7 +266,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
 
         print(f"Episode {episode}, Accuracy: {acc:.3f}, Loss: {loss:.3f}")
 
-
+        plot.plot_view_selcetion_discrete(rot_episode, exp_dir)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Five-Shot Training")
     parser.add_argument("--num_episode", type=int, default=500)

@@ -49,6 +49,71 @@ def plot_and_save_acc(acc_dict, episodes, folder_path, plot_every):
     with open(os.path.join(folder_path, 'acc.json'), "w", encoding="utf-8") as f:
         json.dump(acc_dict, f, ensure_ascii=False, indent=4)
 
+
+def in_angle_range(angle, category, offset):
+        lower_bound = (category - offset) % 360
+        upper_bound = (category + offset) % 360
+        if lower_bound < upper_bound:
+            return lower_bound <= angle <= upper_bound
+        else:
+            return angle >= lower_bound or angle <= upper_bound  # Wraps around 360
+
+def check_angles(view):
+    x, y, z = view
+    offset = 15./180.
+    categories = [
+        -1.,
+        0.5,
+        0.,
+        0.5,
+        1.
+    ]
+    planar = [False]*3
+    for i, angle in enumerate([x, y, z]):
+        for cat in categories:
+            if in_angle_range(float(angle), cat, offset):
+                planar[i] = True
+                break
+
+    return all(planar)
+
+def plot_view_selcetion_discrete(episode_dict, folder_path):
+
+    list_p = []
+    list_non_p = []
+    episode_list = list(episode_dict.keys())
+    episode_list.sort()
+    num_episode = len(episode_list)
+    x_axis = []
+    for episode in range(num_episode):
+        num_p = 0
+        num_non_p = 0
+        for i, view in enumerate(episode_dict[episode]):
+            planar = check_angles(view)
+            if planar:
+                num_p+=1
+            else:
+                num_non_p+=1
+        list_p.append(float(num_p/len(episode_dict[episode])))
+        x_axis.append(episode)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(x_axis, list_p, marker='o', label='planar')
+
+    # Add labels and title
+    plt.xlabel('Episode')
+    plt.ylabel('View ratio')
+    plt.title('View Over Episodes')
+
+    # Add a legend to distinguish between the metrics
+    plt.legend()
+
+    # Optional: add grid for better readability
+    plt.grid(True)
+
+    # Save the plot (optional)
+    plt.savefig(os.path.join(folder_path, 'view_over_episode.png'), dpi=300, bbox_inches='tight')
+
 def plot_view_selcetion(view_selection, episodes, folder_path, split, plot_every, shot):
 
 
