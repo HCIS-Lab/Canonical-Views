@@ -118,6 +118,7 @@ def next_view(current_view, class_idx, image_dict, current_rot, action):
     closest_view = None
     matched_rot = None
     for i, rot in enumerate(rot_list):
+        # skip the current frame
         if rot[0].item() == current_rot[0].item() and rot[1].item() ==current_rot[1].item() and rot[2].item() ==current_rot[2].item():
             continue
         dist = total_angle_distance(new_rot, rot)
@@ -134,10 +135,19 @@ def train_action(train_dict, test_dict, args, num_classes=10):
 
     root_dir = 'results'
     os.makedirs(root_dir, exist_ok=True)  # Will create the folder if it doesn't exist
-    exp_dir = 'discrete_'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
-    + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
-    + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) 
+    if args.log_name == '':
+        exp_dir = 'discrete_'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
+        + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
+        + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) 
+    else:
+        exp_dir = args.log_name
     exp_dir = os.path.join(root_dir, exp_dir)
+
+    i = 0
+    while os.path.isdir(exp_dir):
+        i+=1
+        exp_dir = exp_dir + '_' + str(i)
+        
     os.makedirs(exp_dir, exist_ok=True)
     # ==== Main RL Loop ====
     policy = RotationPolicy().cuda()
