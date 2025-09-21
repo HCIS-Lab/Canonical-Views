@@ -12,6 +12,26 @@ from PIL import Image
 import time
 import plot.plot as plot
 import os
+import csv
+
+import clip
+
+from dust3r.model import AsymmetricCroCo3DStereo
+# from vggt.models.vggt import VGGT          # provided by the repo
+# from vggt.utils.load_fn import load_and_preprocess_images
+
+entropy_dict = {}
+with open('RL_image_paths_all_entropies.csv', newline='') as csvfile:
+    reader = csv.DictReader(csvfile)
+    for row in reader:
+        key = row['Filename']  # use 'id' as the unique key
+        parts = key.split('/')
+        # del parts[7]
+        new_path = '/'.join(parts)
+        # print(new_path)
+        entropy_dict[new_path] = row
+
+
 class_list = ['airplane', 'bathtub', 'bed', 'bin', 'bottle', 'bowl', 'bus', 'can', 'case', 'hat']
 transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -30,10 +50,84 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True, warn_only=True)
 
-def initialize_fixed_model(seed=50):
+def initialize_fixed_model(seed=50, rep=''):
     set_seed(seed)  # Ensure deterministic behavior for this model
-    fixed_model = ResNet18Classifier(10)
+    if rep == '':
+        fixed_model = ResNet18Classifier(10)
+    if rep == 'clip':
+        fixed_model, _ = clip.load("ViT-B/32", device=device)
+    elif rep == 'monst3r':
+        fixed_model = MonST3RWithMLP(encoder_path="checkpoints/MonST3R_PO-TA-S-W_ViTLarge_BaseDecoder_512_dpt.pth")
+    # elif rep == 'vggt':
+    #     fixed_model = VGGTWithMLP(encoder_id="facebook/VGGT-1B", num_classes=len(class_names)).to(DEVICE)
+
     return fixed_model
+
+class MonST3RWithMLP(nn.Module):
+    def __init__(self, encoder_path, hidden_dim=512, num_classes=10):
+        super().__init__()
+        self.encoder = AsymmetricCroCo3DStereo.from_pretrained(encoder_path)
+        for p in self.encoder.parameters():
+            p.requires_grad = False  # Freeze encoder
+
+        # Classifier MLP (MonST3R ViT-B output dim is 768)
+        self.classifier = nn.Sequential(
+            nn.Linear(768, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, num_classes)
+        )
+
+    def forward(self, views):  # views: [B, N_views, 3, H, W]
+        B, N, C, H, W = views.shape
+        views = views.view(B * N, C, H, W)
+        with torch.no_grad():
+            feats = self.encoder.encode_image(views)  # (B*N, 768)
+        feats = feats.view(B, N, -1).mean(dim=1)  # (B, 768)
+        return self.classifier(feats)
+
+class VGGTWithMLP(nn.Module):
+    """
+    Wrap VGGT encoder + an MLP classifier in a single nn.Module.
+    Forward expects a tensor [B, V, 3, H, W] of V views per object.
+    """
+    def __init__(self, encoder_id: str, num_classes: int, hidden_dim: int = 512):
+        super().__init__()
+
+        # ---- Encoder ----
+        self.encoder = VGGT.from_pretrained(encoder_id)        # downloads weights on first run
+        for p in self.encoder.parameters():
+            p.requires_grad = False                            # freeze encoder
+
+        # Inspect one dummy pass to get hidden size (usually 1024 for VGGT-1B)
+        with torch.no_grad():
+            dummy = torch.randn(1, 1, 3, 224, 224)
+            toks, _ = self.encoder.aggregator(dummy)
+            d_model = toks[-1].shape[-1]                       # hidden dim from last layer
+
+        # ---- MLP classifier ----
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, num_classes)
+        )
+
+    def forward(self, views):                      # views: (B, V, 3, H, W)
+        B, V, C, H, W = views.shape
+        device = views.device
+
+        # VGGT expects dtype-aware autocast; see README.
+        dtype = torch.bfloat16 if (
+            device.type == "cuda" and torch.cuda.get_device_capability()[0] >= 8
+        ) else torch.float16
+
+        with torch.no_grad():                      # keep encoder frozen
+            with torch.cuda.amp.autocast(dtype=dtype):
+                tokens_list, _ = self.encoder.aggregator(views)      # list of tokens per layer
+
+        # Use the final aggregated tokens (shape: [B, N_tokens, d])
+        scene_repr = tokens_list[-1].mean(dim=1)    # simple mean-pool
+
+        return self.classifier(scene_repr)          # logits
 
 # ==== Rotation Policy with CNN + LSTM ====
 class RotationPolicy(nn.Module):
@@ -78,6 +172,37 @@ class ResNet18Classifier(nn.Module):
 
     def forward(self, x):
         return self.backbone(x)
+
+class CLIP(nn.Module):
+    """
+    Wrap VGGT or CLIP + MLP classifier into one model variable.
+    """
+    def __init__(self, num_classes: int = 10, hidden_dim: int = 512, device="cuda"):
+        super().__init__()
+        self.device = device
+
+        self.encoder, _ = clip.load("ViT-B/32", device=device)
+        for p in self.encoder.parameters():
+            p.requires_grad = False
+        d_model = self.encoder.visual.output_dim
+
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, num_classes)
+        )
+
+    def forward(self, views):  # (B, V, 3, H, W)
+        # B, V, C, H, W = views.shape
+        # views = views.to(self.device)
+
+        # views = views.view(B * V, C, H, W)
+        with torch.no_grad():
+            feats = self.encoder.encode_image(views)  # (B*V, D)
+        # features = feats.view(B, V, -1).mean(dim=1)    # (B, D)
+
+        return self.classifier(feats)  # (B, num_classes)
+
 
 def random_view(image_dict):
 
@@ -129,7 +254,9 @@ def next_view(current_view, class_idx, image_dict, current_rot, action):
 
     current_view = Image.open(closest_view).convert('RGB')
     current_view = transform(current_view)
-    return current_view, matched_rot
+    full_path = closest_view.replace("..", "/nfs/wattrel/data/md0/kung")
+    first_entropy, sec_entropy = entropy_dict[full_path]['First Order Entropy'], entropy_dict[full_path]['Second Order Entropy'] 
+    return current_view, matched_rot, float(first_entropy), float(sec_entropy)
 
 def train_action(train_dict, test_dict, args, num_classes=10):
 
@@ -138,7 +265,8 @@ def train_action(train_dict, test_dict, args, num_classes=10):
     if args.log_name == '':
         exp_dir = 'discrete_'+str(args.lr_rl) + '_cls_lr' + str(args.lr_cls) \
         + '_episodes' + str(args.num_episode)+'_epochs'+str(args.epochs) \
-        + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) 
+        + '_wd' + str(args.wd_cls) +'_shot'+str(args.shot) \
+        + '_data' +str(args.data_per_class) + '_rep' + str(args.rep)
     else:
         exp_dir = args.log_name
     exp_dir = os.path.join(root_dir, exp_dir)
@@ -147,7 +275,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
     while os.path.isdir(exp_dir):
         i+=1
         exp_dir = exp_dir + '_' + str(i)
-        
+
     os.makedirs(exp_dir, exist_ok=True)
     # ==== Main RL Loop ====
     policy = RotationPolicy().cuda()
@@ -162,34 +290,50 @@ def train_action(train_dict, test_dict, args, num_classes=10):
     NUM_STEPS = args.shot
     NUM_CLASSES = 10  # Change depending on task
     rot_episode = {}
+    first_entropy_episode = {}
+    sec_entropy_episode = {}
+    acc_episode = {}
+    acc_train_episode = {}
+    loss_episode = []
     all_adv = []
     test_x = []
     test_y = []
     for i, class_name in enumerate(class_list):
         test_x = test_x + test_dict[class_name]['image']
-        test_y = test_y + [torch.tensor(i, dtype=torch.int)]*args.data_per_class
+        test_y = test_y + [torch.tensor(i, dtype=torch.int)]*50
 
-    test_dataset = dataset.ActionDataset(test_x, test_y, test=True)
-    test_dataset = DataLoader(test_dataset, batch_size=100, shuffle=False, num_workers=10, pin_memory=True)
+    if args.rep != 'monst3r' and args.rep != 'vggt':
+        test_dataset = dataset.ActionDataset(test_x, test_y, test=True)
+        test_dataset = DataLoader(test_dataset, batch_size=100, shuffle=False, num_workers=10, pin_memory=True)
+    else:
+        test_dataset = dataset.ActionMultiViewDataset(test_x, test_y, test=True)
+        test_dataset = DataLoader(test_dataset, batch_size=100, shuffle=False, num_workers=10, pin_memory=True)
+
 
     for episode in range(args.num_episode):
         # all_images = [[] for _ in range(NUM_OBJECTS)]
         all_images = []
         all_labels = []
         all_entropy = []
+        first_entropy_list = []
+        sec_entropy_list = []
         # all_rot = [[] for _ in range(NUM_OBJECTS)]
         all_rot = []
+
+        first_entropy_episode[episode] = []
+        sec_entropy_episode[episode] = []
+
         hidden = (torch.zeros(1, NUM_OBJECTS, 128).cuda(), torch.zeros(1, NUM_OBJECTS, 128).cuda())
         current_views, current_rot = random_view(train_dict)
-        for i in range(NUM_OBJECTS):
-            all_images.append(current_views[i])
-            all_rot.append(current_rot[i])
-            all_labels.append(float(i))
+        # for i in range(NUM_OBJECTS):
+        #     all_images.append(current_views[i])
+        #     all_rot.append(current_rot[i])
+        #     all_labels.append(float(i))
         current_views = current_views.cuda()
         all_actions = []  # Store actions over all steps
 
         log_probs = []
-        for step in range(NUM_STEPS-1):
+        for step in range(NUM_STEPS):
             actions, hidden, log_prob, entropy = policy(current_views, hidden)
             log_probs.append(log_prob)
             all_entropy.append(entropy)
@@ -199,26 +343,42 @@ def train_action(train_dict, test_dict, args, num_classes=10):
             for i in range(NUM_OBJECTS):
                 # rot = (actions[i] * torch.pi).detach().cpu().numpy()
                 delta_rot = (actions[i])
-                new_image, new_rot = next_view(current_views[i], i, train_dict, current_rot[i], delta_rot)
+                new_image, new_rot, first_entropy, sec_entropy = next_view(current_views[i], i, train_dict, current_rot[i], delta_rot)
+                
                 all_images.append(new_image)
                 next_views.append(new_image)
+
                 all_rot.append(new_rot)
                 next_rot.append(new_rot)
+
                 all_labels.append(float(i))
+
+                first_entropy_episode[episode].append(first_entropy)
+                sec_entropy_episode[episode].append(sec_entropy)
+
             current_views = torch.stack(next_views).cuda()
             current_rot = next_rot
         rot_episode[episode] = all_rot
 
         # Train classifier on collected views
-        classifier = initialize_fixed_model().cuda()
+        if args.rep == 'monst3r':
+            classifier = initialize_fixed_model(rep='monst3r').cuda()
+        else:
+            classifier = initialize_fixed_model().cuda()
+
         clf_opt = optim.Adam(classifier.parameters(), lr=args.lr_cls, weight_decay=args.wd_cls)
         criterion = nn.CrossEntropyLoss()
 
-        combined = list(zip(all_images, all_labels))
-        random.shuffle(combined)
-        train_x, train_y = zip(*combined)
-        train_dataset = dataset.ActionDataset(train_x, train_y)
-        train_dataset = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=10, pin_memory=True)
+        if args.rep != 'monst3r' and args.rep != 'vggt':
+            combined = list(zip(all_images, all_labels))
+            random.shuffle(combined)
+            train_x, train_y = zip(*combined)
+            train_dataset = dataset.ActionDataset(train_x, train_y)
+            train_dataset = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=10, pin_memory=True)
+        else:
+            train_dataset = dataset.ActionMultiViewDataset(all_images, all_labels, NUM_STEPS, NUM_OBJECTS)
+            train_dataset = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=10, pin_memory=True)
+        
         classifier.train()
         for i in range(args.epochs):  # few epochs
             for x, y in train_dataset:
@@ -246,8 +406,9 @@ def train_action(train_dict, test_dict, args, num_classes=10):
             all_preds = torch.cat(all_preds)
             all_labels = torch.cat(all_labels)
             acc = (all_preds == all_labels).float().mean().item()
+            acc_train_episode[episode] = acc
             print(f"Accuracy: {acc:.3f}")
-
+            
         # Simulate reward as test accuracy (replace with real test set)
         classifier.eval()
         with torch.no_grad():
@@ -264,7 +425,7 @@ def train_action(train_dict, test_dict, args, num_classes=10):
             all_preds = torch.cat(all_preds)
             all_labels = torch.cat(all_labels)
             acc = (all_preds == all_labels).float().mean().item()
-
+            acc_episode[episode] = acc
         reward = torch.tensor(acc).cuda()
         baseline_reward = 0.9 * baseline_reward + 0.1 * reward if episode > 0 else reward
         advantage = reward - baseline_reward + 1e-8
@@ -280,10 +441,15 @@ def train_action(train_dict, test_dict, args, num_classes=10):
         loss.backward()
         policy_optim.step()
         scheduler.step(reward)  # reward is the metric to monitor
-
+        loss_episode.append(loss.item())
         print(f"Episode {episode}, Accuracy: {acc:.3f}, Loss: {loss:.3f}")
-
+        plot.plot_loss(loss_episode, exp_dir)
         plot.plot_view_selcetion_discrete(rot_episode, exp_dir)
+        plot.plot_and_save_acc_discrete(acc_train_episode, exp_dir, train=True)
+        plot.plot_and_save_acc_discrete(acc_episode, exp_dir)
+
+        plot.plot_selected_entropy(first_entropy_episode, sec_entropy_episode, exp_dir)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Five-Shot Training")
     parser.add_argument("--num_episode", type=int, default=500)
@@ -294,14 +460,13 @@ if __name__ == "__main__":
     parser.add_argument("--wd_cls", type=float, default=5e-2, help="Learning rate")
     parser.add_argument("--shot", type=int, default=5)
     parser.add_argument("--data_per_class", type=int, default=500)
-    parser.add_argument("--val_every", type=int, default=5)
-    parser.add_argument("--plot_every", type=int, default=100)
     parser.add_argument("--log_name", type=str, default='')
+    parser.add_argument("--rep", type=str, default='')
     args = parser.parse_args()
     # if args.feature:
     print(args)
     data_folder = '../ShapeNet/'
     
     train_image_dict = dataset.load_image_dict(data_folder, 'train', args.data_per_class)
-    test_image_dict = dataset.load_image_dict(data_folder, 'test', args.data_per_class)
+    test_image_dict = dataset.load_image_dict(data_folder, 'test', 50)
     train_action(train_image_dict, test_image_dict, args, 10)

@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 
 def get_resnet50_model():
     model = models.resnet50(pretrained=True)
-    model = torch.nn.Sequential(*list(model.children())[:-2])  # Remove the final classification layer
+    model = torch.nn.Sequential(*list(model.children())[:-1])  # Remove the final classification layer
     model = torch.nn.DataParallel(model)  # Enable multi-GPU support
     model.eval()
     return model
@@ -36,18 +36,14 @@ class ImageDataset(Dataset):
 
 def save_features_for_folder(input_folder, output_folder, model, device, batch_size=32):
     transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-    
-    os.makedirs(output_folder, exist_ok=True)
-    
+        
     image_paths = []
     for root, _, files in os.walk(input_folder):
         for file in files:
-            if file.lower().endswith((".jpg")):
+            if file.lower().endswith((".png")):
                 print('root', root)
                 print('file', file)
                 image_paths.append(os.path.join(root, file))
@@ -69,10 +65,15 @@ def save_features_for_folder(input_folder, output_folder, model, device, batch_s
             torch.save(feature.cpu(), save_path)
 
 if __name__ == "__main__":
-    input_folder = "/N/project/ego4d_vlm/ShapeNet"
+    # input_folder = "/N/project/ego4d_vlm/ShapeNet"
     # output_folder = "/N/project/ego4d_vlm/ShapeNet/feature"
-    output_folder = "/N/project/ego4d_vlm/ShapeNet/feature_18_1stconv"
+    input_folder = "/nfs/wattrel/data/md0/kung/shapenet_dataset/"
+
+    output_folder = "/nfs/wattrel/data/md0/kung/shapenet_dataset/feature_r50"
+    os.makedirs(output_folder, exist_ok=True)
+
+    # output_folder = "/N/project/ego4d_vlm/ShapeNet/feature_18_1stconv"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model = get_resnet50_model().to(device)
-    model = get_resnet18_model_early().to(device)
+    model = get_resnet50_model().to(device)
+    # model = get_resnet18_model_early().to(device)
     save_features_for_folder(input_folder, output_folder, model, device, batch_size=64)

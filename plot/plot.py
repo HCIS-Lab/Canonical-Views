@@ -74,6 +74,51 @@ def check_angles(view):
 
     return all(planar)
 
+
+def plot_and_save_acc_discrete(episode_dict, folder_path, train=False):
+    list_acc = []
+    episode_list = list(episode_dict.keys())
+    episode_list.sort()
+    num_episode = len(episode_list)
+    x_axis = []
+    for episode in range(num_episode):
+        list_acc.append(episode_dict[episode])
+        x_axis.append(episode)
+
+    # ----- Smooth: average every 50 episodes -----
+    window_size = 5
+    smooth_x = []
+    smooth_p = []
+
+    for i in range(0, len(x_axis), window_size):
+        window = list_acc[i:i+window_size]
+        if len(window) > 0:
+            smooth_x.append(np.mean(x_axis[i:i+window_size]))
+            smooth_p.append(np.mean(window))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(smooth_x, smooth_p, marker='o', label='acc')
+
+    # Add labels and title
+    plt.xlabel('Episode')
+    plt.ylabel('Acc')
+    if train:
+        plt.title('Train ACC Over Episodes')
+    else:
+        plt.title('ACC Over Episodes')
+
+    # Add a legend to distinguish between the metrics
+    plt.legend()
+
+    # Optional: add grid for better readability
+    plt.grid(True)
+
+    # Save the plot (optional)
+    if train:
+        plt.savefig(os.path.join(folder_path, 'acc_train_over_episode.png'), dpi=300, bbox_inches='tight')
+    else:
+        plt.savefig(os.path.join(folder_path, 'acc_over_episode.png'), dpi=300, bbox_inches='tight')
+
 def plot_view_selcetion_discrete(episode_dict, folder_path):
 
     list_p = []
@@ -94,8 +139,19 @@ def plot_view_selcetion_discrete(episode_dict, folder_path):
         list_p.append(float(num_p/len(episode_dict[episode])))
         x_axis.append(episode)
 
+    # ----- Smooth: average every 50 episodes -----
+    window_size = 5
+    smooth_x = []
+    smooth_p = []
+
+    for i in range(0, len(x_axis), window_size):
+        window = list_p[i:i+window_size]
+        if len(window) > 0:
+            smooth_x.append(np.mean(x_axis[i:i+window_size]))
+            smooth_p.append(np.mean(window))
+
     plt.figure(figsize=(10, 6))
-    plt.plot(x_axis, list_p, marker='o', label='planar')
+    plt.plot(smooth_x, smooth_p, marker='o', label='planar')
 
     # Add labels and title
     plt.xlabel('Episode')
@@ -110,6 +166,89 @@ def plot_view_selcetion_discrete(episode_dict, folder_path):
 
     # Save the plot (optional)
     plt.savefig(os.path.join(folder_path, 'view_over_episode.png'), dpi=300, bbox_inches='tight')
+
+
+def plot_selected_entropy(first_entropy_dict, sec_entropy_dict, folder_path):
+
+    list_first = []
+    list_sec = []
+    episode_list = list(first_entropy_dict.keys())
+    episode_list.sort()
+    num_episode = len(episode_list)
+    x_axis = []
+    for episode in range(num_episode):
+
+        avg_first = float(sum(first_entropy_dict[episode])/len(first_entropy_dict[episode]))
+        avg_sec = float(sum(sec_entropy_dict[episode])/len(sec_entropy_dict[episode]))
+
+        list_first.append(avg_first)
+        list_sec.append(avg_sec)
+        x_axis.append(episode)
+
+    # ----- Smooth: average every 50 episodes -----
+    window_size = 5
+    smooth_x = []
+    smooth_first = []
+    smooth_sec = []
+
+    for i in range(0, len(x_axis), window_size):
+        window_first = list_first[i:i+window_size]
+        window_sec = list_sec[i:i+window_size]
+        if len(window_first) > 0:
+            smooth_x.append(np.mean(x_axis[i:i+window_size]))
+            smooth_first.append(np.mean(window_first))
+            smooth_sec.append(np.mean(window_sec))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(smooth_x, smooth_first, marker='o', label='first-order')
+    plt.plot(smooth_x, smooth_sec, marker='x', label='second-order')  # change label accordingly
+    # Add labels and title
+    plt.xlabel('Episode')
+    plt.ylabel('Entropy')
+    plt.title('Entropy Over Episodes')
+
+    # Add a legend to distinguish between the metrics
+    plt.legend()
+
+    # Optional: add grid for better readability
+    plt.grid(True)
+
+    # Save the plot (optional)
+    plt.savefig(os.path.join(folder_path, 'entropy_over_episode.png'), dpi=300, bbox_inches='tight')
+
+def plot_loss(loss_list, folder_path):
+
+    num_episode = len(loss_list)
+    x_axis = []
+
+    # ----- Smooth: average every 50 episodes -----
+    window_size = 5
+    smooth_x = []
+    smooth_loss = []
+    for episode in range(num_episode):
+        x_axis.append(episode)
+    for i in range(0, len(x_axis), window_size):
+        window_loss = loss_list[i:i+window_size]
+        if len(window_loss) > 0:
+            smooth_x.append(np.mean(x_axis[i:i+window_size]))
+            smooth_loss.append(float(sum(window_loss)/window_size))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(smooth_x, smooth_loss, marker='o', label='loss')
+    
+    # Add labels and title
+    plt.xlabel('Episode')
+    plt.ylabel('Loss')
+    plt.title('Loss Over Episodes')
+
+    # Add a legend to distinguish between the metrics
+    plt.legend()
+
+    # Optional: add grid for better readability
+    plt.grid(True)
+
+    # Save the plot (optional)
+    plt.savefig(os.path.join(folder_path, 'loss_over_episode.png'), dpi=300, bbox_inches='tight')
 
 def plot_view_selcetion(view_selection, episodes, folder_path, split, plot_every, shot):
 

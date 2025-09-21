@@ -204,6 +204,14 @@ def load_image_dict(data_folder, split, num_sample):
         instances_path = os.path.join(folder_path, ins, 'screenshot')
         files = [os.path.join(instances_path, f) for f in os.listdir(instances_path) if os.path.isfile(os.path.join(instances_path, f)) and f.endswith(".jpg")]
         files.sort()
+        # files = files[:num_sample]
+        # print(files)
+        new_files = []
+        for file in files:
+            file_id = file.split('/')[-1].split('_')[1]
+            if int(file_id) < 500:
+                new_files.append(file)
+        files = new_files
         files = files[:num_sample]
         image_dict[class_name]['image'] = files
         rot = []
@@ -240,6 +248,33 @@ class ActionDataset(Dataset):
             feature = self.feature[idx]
         label = self.labels[idx]
         return feature, label
+
+class ActionMultiViewDataset(Dataset):
+    def __init__(self, images, labels, num_views, num_objects, test=False):
+        image_list = [[]]*num_objects
+        for i in range(num_views):
+            for j in range(num_objects):
+                image_list[j].append(images[i+j])
+        self.images = image_list
+        self.labels = [float(i) for i in range(num_objects)]
+        self.test = test
+        self.transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, idx):
+        if self.test:
+            images = Image.open(self.images[idx]).convert("RGB")
+            images = self.transform(images)
+        else:
+            images = self.images[idx]
+            images = torch.stack(images)
+        label = self.labels[idx]
+        return images, label
 
 
 

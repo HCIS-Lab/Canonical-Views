@@ -20,6 +20,8 @@ import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
 
+from monst3r.model import build_model
+from monst3r.utils import load_ckpt 
 
 def set_seed(seed: int = 42):
     """Set random seed for reproducibility."""
@@ -40,9 +42,11 @@ def initialize_fixed_edge_model(seed, depth, feature):
         fixed_model = FeatureClassifierDepth(depth=depth)
     return fixed_model
 
-def initialize_fixed_model(seed=42, feature=True, pretrained=True, depth=False, classifier=False):
+def initialize_fixed_model(seed=42, feature=True, pretrained=True, depth=False, classifier=False, rep=''):
     set_seed(seed)  # Ensure deterministic behavior for this model
     if feature:
+        if rep == 'monst3r':
+            fixed_model = MonST3RWithMLP(encoder_ckpt_path="checkpoints/monst3r_vitb16.pth")
         if depth:
             fixed_model = FeatureClassifierDepth()
         else:
@@ -58,6 +62,35 @@ def initialize_fixed_set_model(seed):
     set_seed(seed)  # Ensure deterministic behavior for this model
     fixed_model = SetFeatureClassifier()
     return fixed_model
+
+
+class MonST3RWithMLP(nn.Module):
+    def __init__(self, encoder_ckpt_path, encoder_arch="ViT-B/16", hidden_dim=512, num_classes=10):
+        super().__init__()
+        self.encoder = build_model(encoder_arch, pretrained=False)
+        load_ckpt(self.encoder, encoder_ckpt_path)
+        for param in self.encoder.parameters():
+            param.requires_grad = False  # freeze encoder if desired
+
+        self.encoder = self.encoder.to(DEVICE)
+        self.encoder.eval()
+
+        # Classifier MLP (MonST3R ViT-B output dim is 768)
+        self.classifier = nn.Sequential(
+            nn.Linear(768, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, num_classes)
+        )
+
+    def forward(self, views):  # views: (B, N_views, C, H, W)
+        B, N, C, H, W = views.shape
+        views = views.view(B * N, C, H, W)
+        with torch.no_grad():
+            feats = self.encoder.encode_image(views)  # (B * N, D)
+        feats = feats.view(B, N, -1)
+        pooled_feats = feats.mean(dim=1)  # average pooling over views
+        return self.classifier(pooled_feats)
+
 
 class ScoreRes(nn.Module):
     def __init__(self, input_dim, rot=False, pretrained=True):

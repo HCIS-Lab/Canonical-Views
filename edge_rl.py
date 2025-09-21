@@ -304,7 +304,7 @@ def train_rl_selection(train_edge_paths, test_dege_paths,
                     all_pred_depth = torch.cat(all_pred_depth, dim=0)
                     all_depth = torch.cat(all_depth, dim=0)
                     mae = compute_depth_mae(all_pred_depth, all_depth)
-                    
+
                 top1_predictions = all_outputs.argmax(dim=1)  # Get top-1 predictions
                 top1_correct = (top1_predictions == all_labels).sum().item()
                 top1_accuracy = top1_correct / len(all_labels)
@@ -314,7 +314,6 @@ def train_rl_selection(train_edge_paths, test_dege_paths,
                 top5_accuracy = top5_correct / len(all_labels)
 
                 
-
                 if top1_accuracy > episode_acc[episode]['top-1']:
                     episode_acc[episode]['top-1'] = top1_accuracy
                 if top5_accuracy > episode_acc[episode]['top-5']:

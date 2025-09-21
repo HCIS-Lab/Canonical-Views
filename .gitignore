@@ -1,1 +1,5 @@
 /results
+/recordRotation_Internal
+onehot_multi_modified1.py
+onehot_multi_modified.py
+*.pyc
