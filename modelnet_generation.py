@@ -585,13 +585,17 @@ def main(args):
                 file_name = file_name + f"e{meta[i]['elev']:+03.1f}_a{meta[i]['azim']:03.1f}_r{meta[i]['roll']:03.1f}"
                 file_name = file_name + f"_eye{meta[i]['major_to_eye_deg']}_upright{meta[i]['major_proj_upright_deg']}"
 
+                # expanded or foreshortened
                 if meta[i]["is_planar"]:
                     file_name = file_name + '_planar'
-                elif meta[i]["is_planar_like"]:
+                # foreshortened
+                if meta[i]["is_dom_parallel"]
+                    file_name = file_name + '_short'
+
+                if meta[i]["is_planar_like"]:
                     file_name = file_name + '_like'
 
-                if meta[i]["is_dom_parallel"] and not meta[i]["is_planar_like"] and meta[i]["is_planar"]:
-                    file_name = file_name + '_short'
+                
 
                 file_name = file_name + '.png'
                 final_name = file_name
