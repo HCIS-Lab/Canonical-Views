@@ -3,3 +3,30 @@
 onehot_multi_modified1.py
 onehot_multi_modified.py
 *.pyc
+net_canny.pyc
+.DS_Store
+axis.json
+.vscode/sftp.json
+MVSelect-main/.gitattributes
+net_canny.pyc
+/modelnet44_208
+/120
+/217
+/331
+/3_3
+/414
+/505_incremental_reward
+/505_reward_0
+/505_reward_loss
+/513
+/515
+/527
+/317
+/530
+/528
+10_select_dataset.json
+2026-01-18 12:34:24.451965.json
+/train
+sanity_rgb.png
+*.pyc
+MVSelect-main/2026-03-16 10:02:14.563331_meta.json
