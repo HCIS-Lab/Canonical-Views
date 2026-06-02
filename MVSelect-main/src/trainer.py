@@ -26,27 +26,86 @@ class BaseTrainer(object):
         self.args = args
         self.logdir = logdir
         self.denormalize = img_color_denormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        self.last_loss = 0
 
     def rollout(self, step, state, tgt, eps_thres):
-        self.last_loss = 0
+        # if step==0:
+        #     self.last_loss = 0
         feat, init_prob, keep_cams = state
         overall_feat, (log_prob, value, action, entropy) = \
             self.model.select_module(feat, init_prob, keep_cams, eps_thres)
-        task_loss, reward = self.task_loss_reward(overall_feat, tgt, step)
+        task_loss, reward = self.task_loss_reward(feat, init_prob, overall_feat, tgt, step)
         # reward += entropy.detach() * self.args.beta_entropy
         done = torch.ones_like(reward) * (step == self.args.steps - 1)
         return task_loss, reward, done, (log_prob, value, action, entropy)
 
-    def expand_episode(self, feat, keep_cams, tgt, eps_thres, misc):
+    def expand_episode(self, feat, keep_cams, tgt, eps_thres, misc, all_cameras=False):
         B, N, _, _, _ = feat.shape
-        loss = []
+        
         action_sum, return_avg = misc
         # consider all cameras as initial one
-        for init_cam in range(N):
+        if all_cameras:
+            loss = []
+            for init_cam in range(N):
+                log_probs, values, actions, entropies, rewards = [], [], [], [], []
+                task_loss_s, value_loss_s = [], []
+                # get result from using initial camera feature
+                init_prob = F.one_hot(torch.tensor(init_cam).repeat(B), num_classes=N).cuda()
+                # self.last_loss = 0
+                # self.last_loss = torch.zeros(B).cuda()
+                # rollout episode
+                for i in range(self.args.steps):
+                    task_loss, reward, done, (log_prob, value, action, entropy) = \
+                        self.rollout(i, (feat, init_prob, keep_cams), tgt, eps_thres)
+                    # TD update
+                    with torch.no_grad():
+                        _, (_, next_value, _, _) = self.target_model(feat, init_prob + action, keep_cams)
+                        next_value = next_value.max(dim=1)[0] * (1 - done)
+                    # record state & transitions
+                    log_probs.append(log_prob)
+                    values.append((value * action).sum(1))
+                    actions.append(action)
+                    entropies.append(entropy)
+                    rewards.append(reward)
+                    # loss
+                    task_loss_s.append(task_loss)
+                    value_loss = F.smooth_l1_loss((value * action).sum(1), reward + self.args.gamma * next_value)
+                    value_loss_s.append(value_loss)
+                    # stats
+                    action_sum += action.detach().sum(dim=0)
+                    # update the init_prob
+                    init_prob += action
+                
+
+                log_probs, values, actions, entropies, rewards = torch.stack(log_probs), torch.stack(values), \
+                    torch.stack(actions), torch.stack(entropies), torch.stack(rewards)
+                task_loss_s, value_loss_s = torch.stack(task_loss_s), torch.stack(value_loss_s)
+                # calculate returns for each step in episode
+                R = torch.zeros([B]).cuda()
+                returns = torch.empty([self.args.steps, B]).cuda().float()
+                for i in reversed(range(self.args.steps)):
+                    R = rewards[i] + self.args.gamma * R
+                    returns[i] = R
+                return_avg = returns.mean(1) if return_avg is None else returns.mean(1) * 0.05 + return_avg * 0.95
+                # policy & value loss
+                value_loss = value_loss_s.mean()
+                # value_loss = F.smooth_l1_loss(values, returns)
+                # policy_loss = (-log_probs * (returns - values.detach())).mean()
+                # task loss
+                task_loss = task_loss_s[-1]
+                # loss.append(value_loss + policy_loss + task_loss -
+                #             entropies.mean() * self.args.beta_entropy * eps_thres)
+                loss.append(value_loss + task_loss)
+            loss = torch.stack(loss).mean()
+            update_ema_variables(self.model.select_module, self.target_model)
+            return loss, (action_sum, return_avg, value_loss)
+        else:
             log_probs, values, actions, entropies, rewards = [], [], [], [], []
             task_loss_s, value_loss_s = [], []
             # get result from using initial camera feature
-            init_prob = F.one_hot(torch.tensor(init_cam).repeat(B), num_classes=N).cuda()
+            init_prob = F.one_hot(
+                                torch.randint(0, N, (B,)),  # random integers in [0, N)
+                                num_classes=N).cuda()
 
             # rollout episode
             for i in range(self.args.steps):
@@ -89,10 +148,11 @@ class BaseTrainer(object):
             task_loss = task_loss_s[-1]
             # loss.append(value_loss + policy_loss + task_loss -
             #             entropies.mean() * self.args.beta_entropy * eps_thres)
-            loss.append(value_loss + task_loss)
-        loss = torch.stack(loss).mean()
-        update_ema_variables(self.model.select_module, self.target_model)
-        return loss, (action_sum, return_avg, value_loss)
+            loss = (value_loss + task_loss).mean()
+            # print(type(loss))
+            # print(loss.shape)
+            update_ema_variables(self.model.select_module, self.target_model)
+            return loss, (action_sum, return_avg, value_loss)
 
     def task_loss_reward(self, overall_feat, tgt, step):
         raise NotImplementedError
