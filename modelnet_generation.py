@@ -16,12 +16,19 @@ from PIL import Image
 from pytorch3d.datasets import (
     ShapeNetCore,
 )
+
 from pytorch3d.renderer import (
+    MeshRenderer,
+    MeshRasterizer,
+    HardPhongShader,
+    RasterizationSettings,
     OpenGLPerspectiveCameras,
     PointLights,
-    RasterizationSettings,
     look_at_view_transform
 )
+from pytorch3d.io import load_objs_as_meshes
+from pytorch3d.renderer import TexturesVertex
+from pytorch3d.renderer import Materials
 
 # add path for demo utils functions 
 import sys
@@ -79,7 +86,17 @@ def _chunk_indices(n, k):
     return out
 
 
+def texture_has_color(meshes, eps=0.01):
+    if meshes.textures is None or not hasattr(meshes.textures, "maps"):
+        return False
+    tex = meshes.textures.maps_padded()[0]
+    return (
+        (tex[...,0] - tex[...,1]).abs().mean() > eps or
+        (tex[...,0] - tex[...,2]).abs().mean() > eps
+    )
+
 def render_singlegpu_by_views(
+    obj_path,
     dataset,
     model_id,
     cameras,
@@ -105,7 +122,14 @@ def render_singlegpu_by_views(
             materials = materials.to(dev)
         except AttributeError:
             pass  # some material structs might not have .to()
-
+    else:
+        materials = Materials(
+        device=device,
+        ambient_color=((1.0, 1.0, 1.0),),
+        diffuse_color=((1.0, 1.0, 1.0),),
+        specular_color=((0.0, 0.0, 0.0),),
+        shininess=64.0,
+    )
     # Optional: stricter debugging (use once to pinpoint)
     # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
@@ -121,18 +145,95 @@ def render_singlegpu_by_views(
             **kwargs,
         )
 
+        # renderer = MeshRenderer(
+        #     rasterizer=MeshRasterizer(
+        #         cameras=cameras,
+        #         raster_settings=raster_settings
+        #     ),
+        #     shader=HardPhongShader(
+        #         device=device,
+        #         cameras=cameras,
+        #         lights=lights,
+        #         materials=materials,   # ← REQUIRED
+        #     )
+        # )
+        
+
+        # depth
+        # rasterizer = MeshRasterizer(
+        #     cameras=cameras,
+        #     raster_settings=raster_settings,
+        # )
+        # shader = HardPhongShader(
+        #     device=device,
+        #     cameras=cameras,
+        #     lights=lights,
+        # )
+        meshes = load_objs_as_meshes(
+            [obj_path],  # must be a LIST
+            device=device,
+            load_textures=True
+        )
+
+        # if not texture_has_color(meshes):
+        #     # print("⚠️ Grayscale or missing texture → using vertex colors")
+        #     verts = meshes.verts_packed()
+        #     verts_rgb = torch.rand_like(verts)
+        #     meshes.textures = TexturesVertex(verts_rgb[None])
+
+        # verts = meshes.verts_packed()
+        # textures = TexturesVertex(
+        #     verts_features=torch.ones_like(verts)[None]
+        # )
+
+        # meshes.textures = textures
+
+        num_views=57
+        meshes = meshes.extend(num_views)  # num_views = 57
+
+        
+
+        # images = renderer(meshes)
+        # rgb = images[..., :3]   # ✅ real color restored
+
+        # print(type(meshes.textures))
+
+        # fragments = rasterizer(meshes)
+
+        # images = shader(
+        #     fragments,
+        #     meshes,
+        #     cameras=cameras
+        # )
+        # fragments = renderer.rasterizer(meshes)
+        fragments = MeshRasterizer(
+            cameras=cameras,
+            raster_settings=raster_settings,
+        )(meshes)
+        depth = fragments.zbuf[..., 0]
+
+        # rgb = images[..., :3]
+        # depth = fragments.zbuf[..., 0]
+        depth[depth == float("inf")] = 0.0
+        mask = depth > 0
+        d_inv = torch.zeros_like(depth)
+        d_inv[mask] = 1.0 / (depth[mask] + 1e-6)
+        d_inv[mask] = (d_inv[mask] - d_inv[mask].min()) / (
+            d_inv[mask].max() - d_inv[mask].min()
+        )
+
         # Safety sync to surface kernel errors here
         if dev.type == "cuda":
             torch.cuda.synchronize(dev)
 
-    return imgs.detach().cpu()
+    return imgs.detach().cpu(), d_inv
 
 
 import math
 import torch
 from pytorch3d.renderer.cameras import look_at_view_transform, OpenGLPerspectiveCameras
 
-def build_view_set(dist=1.5, step_deg=30, device="cpu", roll_step_deg=22.5, rolls=None):
+def build_view_set(dist=1.8, step_deg=30, device="cpu", roll_step_deg=22.5, rolls=None):
     """
     Build uniformly distributed camera views over the sphere using elevation and azimuth grids.
     Returns:
@@ -434,6 +535,7 @@ def main(args):
     R = R[split_size*batch:split_size*(batch+1),:,:]
     T = T[split_size*batch:split_size*(batch+1),:]
     view_start_idx = split_size*batch
+    # view_start_idx = 0
 
     # Example A: cameras for ALL views (principal + every 10° on equator)
     cameras = OpenGLPerspectiveCameras(R=R, T=T, device=device)
@@ -448,7 +550,22 @@ def main(args):
         max_faces_per_bin=20000,  # ↑ capacity per bin
     )
 
-    lights = PointLights(location=torch.tensor([0.0, 1.0, -2.0], device=device)[None],device=device)
+    lights = PointLights(
+        location=torch.tensor([0.0, 1.0, -2.0], device=device)[None],device=device)
+    # lights = PointLights(
+    #     device=device,
+    #     location=[[0.0, 0.0, 3.0]],
+    #     ambient_color=((0.3, 0.3, 0.3),),
+    #     diffuse_color=((0.7, 0.7, 0.7),),
+    #     specular_color=((0.1, 0.1, 0.1),),
+    # )
+    # lights = PointLights(
+    # device=device,
+    # location=[[2.0, 2.0, 2.0]],
+    # ambient_color=((0.6, 0.6, 0.6),),
+    # diffuse_color=((0.4, 0.4, 0.4),),
+    # specular_color=((0.0, 0.0, 0.0),),
+    # )
 
     devices=device
 
@@ -476,56 +593,63 @@ def main(args):
         for model_idx, model_id in enumerate(model_list):
             view_idx = view_start_idx
             # view_idx = 0
-            try:
-                images = render_singlegpu_by_views(
-                    shapenet_dataset,
-                    model_id=model_id,
-                    cameras=cameras,                      # batched cameras
-                    device=device,
-                    raster_settings=raster_settings,
-                    lights=lights,
-                    # blend_params=...,  # pass any extra kwargs your render() accepts
-                )
-            except:
-                continue
-
+            
             obj_path = os.path.join(SHAPENET_PATH, synsetId, model_id, "models", "model_normalized.obj")
             if not os.path.exists(obj_path):
                 obj_path = os.path.join(SHAPENET_PATH, synsetId, model_id, "models", "model.obj")
             if not os.path.exists(obj_path):
                 continue
+            # try:
+            images, depth = render_singlegpu_by_views(
+                obj_path,
+                shapenet_dataset,
+                model_id=model_id,
+                cameras=cameras,                      # batched cameras
+                device=device,
+                raster_settings=raster_settings,
+                lights=lights,
+                # blend_params=...,  # pass any extra kwargs your render() accepts
+            )
+            # except:
+            #     continue
+
+            
 
             model_exist+=1
 
             if split == "train":
-                if model_exist > 30:
+                if model_exist > 50:
                     # num_classes+=1
                     # class_list.append(cat)
                     break
             elif split =="val":
-                if model_exist <= 30:
+                if model_exist <= 50:
                     continue
-                elif model_exist >35:
+                elif model_exist >55:
                     break
             elif split == "test":
-                if model_exist <= 35:
+                if model_exist <= 55:
                     continue
-                elif model_exist >65:
+                elif model_exist >105:
                     break
             elif split == "test-down":
-                if model_exist <= 65:
+                if model_exist <= 105:
                     continue
-                elif model_exist >70:
+                elif model_exist >110:
                     break
 
             print(cat)
             print(str(model_exist)+'/300')
 
-            root = 'modelnet_32_60_1_4'
+            root = 'modelnet_32_60_1_23'
+            root_depth = 'depth_' + root
             os.makedirs(root, exist_ok=True)
             os.makedirs(os.path.join(root, cat), exist_ok=True)
             os.makedirs(os.path.join(root, cat, split), exist_ok=True)
 
+            os.makedirs(root_depth, exist_ok=True)
+            os.makedirs(os.path.join(root_depth, cat), exist_ok=True)
+            os.makedirs(os.path.join(root_depth, cat, split), exist_ok=True)
 
             parallel_tol_deg = 25  # tweak as you like (e.g., 5–15)
             angles_out = []  
@@ -579,6 +703,7 @@ def main(args):
                 # is_dom_parallel = angle_deg <= parallel_tol_deg
                 # meta[i]["is_dominant_axis_parallel"] = bool(is_dom_parallel)
 
+                # images_i = (images[i].clamp(0, 1) * 255).byte().cpu().numpy()
 
                 pil_image = transforms.ToPILImage()(images[i,:,:,:].permute(2,0,1)).convert('RGBA')
                 file_name = str(model_id) + '_' + str(view_idx) + '_' 
@@ -589,7 +714,7 @@ def main(args):
                 if meta[i]["is_planar"]:
                     file_name = file_name + '_planar'
                 # foreshortened
-                if meta[i]["is_dom_parallel"]
+                if meta[i]["is_dom_parallel"]:
                     file_name = file_name + '_short'
 
                 if meta[i]["is_planar_like"]:
@@ -600,8 +725,24 @@ def main(args):
                 file_name = file_name + '.png'
                 final_name = file_name
 
+                # Image.fromarray(images_i, mode="RGB").save(os.path.join(root,cat,split,final_name))
                 pil_image.save(os.path.join(root,cat,split,final_name))
+                # Image.fromarray(depth, mode="I;16").save(os.path.join(root_depth,cat,split,final_name))
+                # Image.fromarray((depth * 255).byte().cpu().numpy()).save(os.path.join(root_depth,cat,split,final_name))
+                d = depth[i]                      # (H, W)
+                mask = d > 0
 
+                d_norm = torch.zeros_like(d)
+                if mask.any():
+                    d_min = d[mask].min()
+                    d_max = d[mask].max()
+                    if d_max > d_min:
+                        d_norm[mask] = (d[mask] - d_min) / (d_max - d_min)
+
+                # d_norm[mask] = (d[mask] - d[mask].min()) / (d[mask].max() - d[mask].min())
+
+                d_vis = (d_norm * 255).byte().cpu().numpy()
+                Image.fromarray(d_vis, mode="L").save(os.path.join(root_depth,cat,split,final_name))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='view selection for multiview classification & detection')
