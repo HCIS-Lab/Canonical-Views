@@ -85,6 +85,13 @@ def parse_args():
     p.add_argument("--jitter_hue", type=float, default=0.1)
     p.add_argument("--max_epochs", type=int, default=None,
                    help="If set, evaluate only the first N epochs found (smoke test).")
+    p.add_argument("--per_epoch_checkpoint", action="store_true",
+                   help="Use the classifier-AT-epoch-E (loaded from model_e<E>.pth) "
+                        "instead of the FINAL classifier for each epoch's evaluation. "
+                        "Requires training to have been run with --save_every_epoch >0. "
+                        "Curves answer 'what reward signal was the agent getting at "
+                        "epoch t' instead of 'how does the fixed final classifier see "
+                        "past selections'.")
     p.add_argument("--output_dir", default=None,
                    help="Defaults to <selection_dir>/temporal_test/.")
     return p.parse_args()
@@ -336,7 +343,7 @@ def evaluate_epoch(model, trials, condition, epoch, transform, device, args):
 # Plots
 # ---------------------------------------------------------------------------
 
-def plot_deviations(df, output_dir):
+def plot_deviations(df, output_dir, per_epoch_mode=False):
     pivot = df.pivot_table(index="epoch", columns="condition", values="accuracy")
     epochs = pivot.index.to_numpy()
     label_map = {
@@ -354,8 +361,8 @@ def plot_deviations(df, output_dir):
         ax.axhline(0, color="gray", ls="--", alpha=0.5)
         ax.set_xlabel("Training epoch (selections from)")
         ax.set_ylabel("Accuracy drop (%) — clean minus perturbed")
-        ax.set_title(f"Manipulation robustness over epochs: {label}\n"
-                     f"(final classifier held fixed)")
+        regime = "classifier-at-epoch-t" if per_epoch_mode else "final classifier held fixed"
+        ax.set_title(f"Manipulation robustness over epochs: {label}\n({regime})")
         ax.grid(alpha=0.3)
         fig.tight_layout()
         path = os.path.join(output_dir, f"deviation_{cond}.png")
@@ -364,7 +371,7 @@ def plot_deviations(df, output_dir):
         print(f"Saved: {path}")
 
 
-def plot_margin(df, output_dir):
+def plot_margin(df, output_dir, per_epoch_mode=False):
     sub = df[df["condition"] == "none"].sort_values("epoch")
     if sub.empty:
         return
@@ -374,8 +381,8 @@ def plot_margin(df, output_dir):
                 ecolor="#a6d854", alpha=0.95)
     ax.set_xlabel("Training epoch (selections from)")
     ax.set_ylabel("Mean prediction margin (top-1 − top-2 logit)")
-    ax.set_title("Prediction-margin stability on agent-selected views\n"
-                 "(final classifier held fixed)")
+    regime = "classifier-at-epoch-t" if per_epoch_mode else "final classifier held fixed"
+    ax.set_title(f"Prediction-margin stability on agent-selected views\n({regime})")
     ax.grid(alpha=0.3)
     fig.tight_layout()
     path = os.path.join(output_dir, "margin_over_time.png")
@@ -430,14 +437,38 @@ def main():
                           non_like=args.non_like)
     classnames = test_set.classnames
 
-    # --- Load final classifier ---
-    ckpt_path = locate_final_checkpoint(args)
-    print(f"Loading checkpoint: {ckpt_path}")
+    # --- Locate the matching stage-2 logdir (always needed: final checkpoint
+    # in default mode, per-epoch checkpoints in --per_epoch_checkpoint mode).
+    final_ckpt = locate_final_checkpoint(args)
+    logdir_for_checkpoints = os.path.dirname(final_ckpt)
+    print(f"Logdir: {logdir_for_checkpoints}")
+
     model = MVCNN(test_set, args.arch, args.aggregation, args.dataset).to(device)
-    state = torch.load(ckpt_path, map_location=device)
-    state = {k: v for k, v in state.items() if k in model.state_dict()}
-    model.load_state_dict(state, strict=False)
-    model.eval()
+
+    def load_state(path):
+        state = torch.load(path, map_location=device)
+        state = {k: v for k, v in state.items() if k in model.state_dict()}
+        model.load_state_dict(state, strict=False)
+        model.eval()
+
+    if not args.per_epoch_checkpoint:
+        print(f"Loading final checkpoint (held fixed across epochs): {final_ckpt}")
+        load_state(final_ckpt)
+    else:
+        # Sanity check: must have at least one model_e<E>.pth in the logdir.
+        per_epoch_files = sorted(
+            f for f in os.listdir(logdir_for_checkpoints)
+            if f.startswith("model_e") and f.endswith(".pth")
+        )
+        if not per_epoch_files:
+            raise SystemExit(
+                f"--per_epoch_checkpoint set, but no model_e<E>.pth files exist in\n"
+                f"  {logdir_for_checkpoints}\n"
+                f"Re-run training with --save_every_epoch <N> to write them, e.g.\n"
+                f"  python main.py ... --steps 5 --save_every_epoch 1"
+            )
+        print(f"--per_epoch_checkpoint mode: found {len(per_epoch_files)} epoch "
+              f"snapshots under {logdir_for_checkpoints}")
 
     # --- Image transform (matches downstream + main pipeline preprocessing) ---
     transform = T.Compose([
@@ -448,7 +479,16 @@ def main():
 
     # --- Evaluate ---
     rows = []
+    skipped_no_epoch_ckpt = []
     for epoch in tqdm(epochs_all, desc="epochs"):
+        # Per-epoch model swap if requested
+        if args.per_epoch_checkpoint:
+            epoch_ckpt = os.path.join(logdir_for_checkpoints, f"model_e{epoch}.pth")
+            if not os.path.exists(epoch_ckpt):
+                skipped_no_epoch_ckpt.append(epoch)
+                continue
+            load_state(epoch_ckpt)
+
         trials = build_trials_for_epoch(all_sel[epoch], args.data_root,
                                          classnames, args.split)
         if not trials:
@@ -459,6 +499,10 @@ def main():
                 continue
             rows.append({"epoch": epoch, "condition": cond, **res})
 
+    if skipped_no_epoch_ckpt:
+        print(f"Skipped {len(skipped_no_epoch_ckpt)} epoch(s) — no matching "
+              f"model_e<E>.pth: {skipped_no_epoch_ckpt}")
+
     if not rows:
         raise SystemExit("No results produced.")
     df = pd.DataFrame(rows)
@@ -467,8 +511,8 @@ def main():
     print(f"Saved: {csv_path} ({len(df)} rows)")
 
     # --- Plots ---
-    plot_deviations(df, output_dir)
-    plot_margin(df, output_dir)
+    plot_deviations(df, output_dir, per_epoch_mode=args.per_epoch_checkpoint)
+    plot_margin(df, output_dir, per_epoch_mode=args.per_epoch_checkpoint)
     print("\nDone.")
 
 

@@ -366,6 +366,11 @@ def main(args):
             # checkpoint and broke downstream eval (temporal_selection_test,
             # zero_shot_view_type_test, etc.).
             torch.save(model.state_dict(), os.path.join(logdir, 'model.pth'))
+            # Optional per-epoch snapshot for time-resolved downstream analysis
+            # (e.g., temporal_selection_test.py --per_epoch_checkpoint).
+            if args.save_every_epoch > 0 and (epoch % args.save_every_epoch == 0):
+                torch.save(model.state_dict(),
+                           os.path.join(logdir, f'model_e{epoch}.pth'))
         if args.steps:
             with open(os.path.join(meta_log, str(exp_name)+'_selection.json'), 'w') as f:
                 json.dump(total_select_json, f, indent=4)
@@ -599,6 +604,12 @@ if __name__ == '__main__':
                              'checkpoint. The backbone remains ImageNet-pretrained '
                              '(MVCNN default); classifier and selector heads start from '
                              'their default init and train jointly with the selector.')
+    parser.add_argument('--save_every_epoch', type=int, default=0,
+                        help='If >0, additionally save model_e<E>.pth every N epochs '
+                             '(in addition to model.pth which overwrites every epoch). '
+                             '0 = off. 1 = every epoch (heaviest on disk). 5/10 = sampled.'
+                             ' Needed if you want to run temporal_selection_test.py with '
+                             '--per_epoch_checkpoint (model-at-t analysis).')
     parser.add_argument('--num_train_instances', type=int, default=30)
     parser.add_argument('--freeze_epoch', type=int, default=100)
     parser.add_argument('--freeze_backbone', action='store_true')

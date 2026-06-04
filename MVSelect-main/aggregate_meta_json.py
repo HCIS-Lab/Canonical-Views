@@ -13,8 +13,12 @@ BUCKET_PRIOR = {
     "Foreshortened-like": 0.07,
     "Remainder": 0.738,
 }
-CANONICAL_PRIOR = BUCKET_PRIOR["expanded"] + BUCKET_PRIOR["Expanded-like"]
-FORESHORTENED_PRIOR = BUCKET_PRIOR["Foreshortened"] + BUCKET_PRIOR["Foreshortened-like"]
+# "Family" = a pair of related view-type buckets collapsed into one curve.
+# All selected views are canonical in the dataset's labelling sense; the
+# family terminology here just groups buckets by geometric character
+# (broadside-axis vs along-axis).
+EXPANDED_FAM_PRIOR = BUCKET_PRIOR["expanded"] + BUCKET_PRIOR["Expanded-like"]
+FORESHORTENED_FAM_PRIOR = BUCKET_PRIOR["Foreshortened"] + BUCKET_PRIOR["Foreshortened-like"]
 REMAINDER_PRIOR = BUCKET_PRIOR["Remainder"]
 
 REP_LIST = ['rgb', 'depth', 'edge']
@@ -351,15 +355,15 @@ for REP in REP_LIST:
             plt.close()
 
             # =========================
-            # COLLAPSED CANONICALITY PLOT
-            # canonical      = expanded + Expanded-like
-            # foreshortened  = Foreshortened + Foreshortened-like
-            # remainder      = Remainder (drawn faint for reference)
+            # COLLAPSED FAMILY PLOT
+            # expanded family       = expanded + Expanded-like
+            # foreshortened family  = Foreshortened + Foreshortened-like
+            # remainder             = Remainder (single bucket, drawn faint)
             #
             # All curves are share-of-selections per epoch (sums of buckets
             # already in [0, 1]). Bands are ±SEM across runs.
             # =========================
-            canon_per_run = smoothed["expanded"] + smoothed["Expanded-like"]
+            exp_per_run = smoothed["expanded"] + smoothed["Expanded-like"]
             fore_per_run = smoothed["Foreshortened"] + smoothed["Foreshortened-like"]
             rem_per_run = smoothed["Remainder"]
 
@@ -368,18 +372,18 @@ for REP in REP_LIST:
                 sem = arr.std(axis=0, ddof=1) / np.sqrt(arr.shape[0]) if arr.shape[0] > 1 else np.zeros_like(mean)
                 return mean, sem
 
-            canon_mean, canon_sem = _mean_sem(canon_per_run)
+            exp_mean, exp_sem = _mean_sem(exp_per_run)
             fore_mean, fore_sem = _mean_sem(fore_per_run)
             rem_mean, rem_sem = _mean_sem(rem_per_run)
-            epochs = np.arange(canon_mean.shape[0])
+            epochs = np.arange(exp_mean.shape[0])
 
             plt.figure()
-            plt.plot(epochs, canon_mean, color="#2ca02c", lw=2.0,
-                     label="Canonical (expanded + Expanded-like)")
-            plt.fill_between(epochs, canon_mean - canon_sem, canon_mean + canon_sem,
+            plt.plot(epochs, exp_mean, color="#2ca02c", lw=2.0,
+                     label="Expanded family (expanded + Expanded-like)")
+            plt.fill_between(epochs, exp_mean - exp_sem, exp_mean + exp_sem,
                              color="#2ca02c", alpha=0.2)
             plt.plot(epochs, fore_mean, color="#d62728", lw=2.0,
-                     label="Foreshortened (Foreshortened + Foreshortened-like)")
+                     label="Foreshortened family (Foreshortened + Foreshortened-like)")
             plt.fill_between(epochs, fore_mean - fore_sem, fore_mean + fore_sem,
                              color="#d62728", alpha=0.2)
             plt.plot(epochs, rem_mean, color="#7f7f7f", lw=1.0, ls="--", alpha=0.7,
@@ -387,27 +391,28 @@ for REP in REP_LIST:
             plt.fill_between(epochs, rem_mean - rem_sem, rem_mean + rem_sem,
                              color="#7f7f7f", alpha=0.1)
 
-            # Chance reference lines (= share of available views in each bucket)
-            plt.axhline(CANONICAL_PRIOR, color="#2ca02c", ls=":", lw=1.0, alpha=0.5,
-                        label=f"canonical chance ({CANONICAL_PRIOR:.1%})")
-            plt.axhline(FORESHORTENED_PRIOR, color="#d62728", ls=":", lw=1.0, alpha=0.5,
-                        label=f"foreshortened chance ({FORESHORTENED_PRIOR:.1%})")
+            # Chance reference lines (= share of available views in each bucket-group)
+            plt.axhline(EXPANDED_FAM_PRIOR, color="#2ca02c", ls=":", lw=1.0, alpha=0.5,
+                        label=f"expanded-family chance ({EXPANDED_FAM_PRIOR:.1%})")
+            plt.axhline(FORESHORTENED_FAM_PRIOR, color="#d62728", ls=":", lw=1.0, alpha=0.5,
+                        label=f"foreshortened-family chance ({FORESHORTENED_FAM_PRIOR:.1%})")
             plt.axhline(REMAINDER_PRIOR, color="#7f7f7f", ls=":", lw=1.0, alpha=0.5,
                         label=f"remainder chance ({REMAINDER_PRIOR:.1%})")
 
-            # First epoch where mean(canonical) > mean(foreshortened)
-            cross = first_epoch(canon_mean > fore_mean)
+            # First epoch where mean(expanded family) > mean(foreshortened family)
+            cross = first_epoch(exp_mean > fore_mean)
             if cross is not None:
                 plt.axvline(cross, color="#2ca02c", ls=":", alpha=0.6,
-                            label=f"canonical > foreshortened @ ep {cross}")
+                            label=f"expanded > foreshortened @ ep {cross}")
 
             plt.xlabel("Epoch")
             plt.ylabel("Share of selections")
-            plt.title("Canonical vs Foreshortened Selection (mean ± SEM across runs)")
+            plt.title("Expanded vs Foreshortened Families — Selection Share "
+                      "(mean ± SEM across runs)")
             plt.ylim(0.0, 1.0)
             plt.legend(loc="best", fontsize=7)
             plt.tight_layout()
-            plt.savefig(os.path.join(EXP_ROOT, "aggregated_view_canonicality.png"))
+            plt.savefig(os.path.join(EXP_ROOT, "aggregated_view_family_ratios.png"))
             plt.close()
 
             # =========================
@@ -415,22 +420,22 @@ for REP in REP_LIST:
             # lift = observed_share / chance_share
             # 1.0 = uniform random, >1 = over-selected, <1 = under-selected.
             # =========================
-            canon_lift_per_run = canon_per_run / CANONICAL_PRIOR
-            fore_lift_per_run = fore_per_run / FORESHORTENED_PRIOR
+            exp_lift_per_run = exp_per_run / EXPANDED_FAM_PRIOR
+            fore_lift_per_run = fore_per_run / FORESHORTENED_FAM_PRIOR
             rem_lift_per_run = rem_per_run / REMAINDER_PRIOR
 
-            canon_lift_mean, canon_lift_sem = _mean_sem(canon_lift_per_run)
+            exp_lift_mean, exp_lift_sem = _mean_sem(exp_lift_per_run)
             fore_lift_mean, fore_lift_sem = _mean_sem(fore_lift_per_run)
             rem_lift_mean, rem_lift_sem = _mean_sem(rem_lift_per_run)
 
             plt.figure()
-            plt.plot(epochs, canon_lift_mean, color="#2ca02c", lw=2.0,
-                     label="Canonical lift")
-            plt.fill_between(epochs, canon_lift_mean - canon_lift_sem,
-                             canon_lift_mean + canon_lift_sem,
+            plt.plot(epochs, exp_lift_mean, color="#2ca02c", lw=2.0,
+                     label="Expanded family lift")
+            plt.fill_between(epochs, exp_lift_mean - exp_lift_sem,
+                             exp_lift_mean + exp_lift_sem,
                              color="#2ca02c", alpha=0.2)
             plt.plot(epochs, fore_lift_mean, color="#d62728", lw=2.0,
-                     label="Foreshortened lift")
+                     label="Foreshortened family lift")
             plt.fill_between(epochs, fore_lift_mean - fore_lift_sem,
                              fore_lift_mean + fore_lift_sem,
                              color="#d62728", alpha=0.2)
@@ -442,25 +447,26 @@ for REP in REP_LIST:
             plt.axhline(1.0, color="black", ls=":", lw=1.0, alpha=0.6, label="chance (1.0)")
             plt.xlabel("Epoch")
             plt.ylabel("Lift over chance (observed share / available share)")
-            plt.title("Canonical vs Foreshortened Lift over Chance (mean ± SEM)")
+            plt.title("Expanded vs Foreshortened Families — Lift over Chance "
+                      "(mean ± SEM)")
             plt.legend(loc="best", fontsize=8)
             plt.tight_layout()
-            plt.savefig(os.path.join(EXP_ROOT, "aggregated_view_canonicality_lift.png"))
+            plt.savefig(os.path.join(EXP_ROOT, "aggregated_view_family_lift.png"))
             plt.close()
 
             # Record the collapsed curves and crossing epoch into the summary JSON
-            summary["canonicality"] = {
+            summary["view_family"] = {
                 "bucket_prior": BUCKET_PRIOR,
-                "canonical_prior": CANONICAL_PRIOR,
-                "foreshortened_prior": FORESHORTENED_PRIOR,
+                "expanded_family_prior": EXPANDED_FAM_PRIOR,
+                "foreshortened_family_prior": FORESHORTENED_FAM_PRIOR,
                 "remainder_prior": REMAINDER_PRIOR,
-                "canonical_mean": canon_mean.tolist(),
-                "foreshortened_mean": fore_mean.tolist(),
+                "expanded_family_mean": exp_mean.tolist(),
+                "foreshortened_family_mean": fore_mean.tolist(),
                 "remainder_mean": rem_mean.tolist(),
-                "canonical_lift_mean": canon_lift_mean.tolist(),
-                "foreshortened_lift_mean": fore_lift_mean.tolist(),
+                "expanded_family_lift_mean": exp_lift_mean.tolist(),
+                "foreshortened_family_lift_mean": fore_lift_mean.tolist(),
                 "remainder_lift_mean": rem_lift_mean.tolist(),
-                "canonical_over_foreshortened_first_epoch": cross,
+                "expanded_over_foreshortened_first_epoch": cross,
             }
             with open(os.path.join(EXP_ROOT, OUT_JSON), "w") as f:
                 json.dump(summary, f, indent=2, sort_keys=True)

@@ -158,8 +158,8 @@ cd human_multiview-main
 GPUS=2 LIMIT=5 ./scripts/run_pipeline.sh
 
 # Different selected_view_type filter
-VIEW_TYPE=01 ./scripts/run_pipeline.sh         # canonical buckets only
-VIEW_TYPE=23 ./scripts/run_pipeline.sh         # foreshortened buckets only
+VIEW_TYPE=01 ./scripts/run_pipeline.sh         # expanded-family buckets only
+VIEW_TYPE=23 ./scripts/run_pipeline.sh         # foreshortened-family buckets only
 ```
 
 Internally the wrapper runs the three steps in sequence:
@@ -269,6 +269,45 @@ A "same-bucket pair" is two **different** views drawn from the same view-type
 bucket, not the same view twice. The Identical column is the only condition
 that feeds two identical images to the model.
 
+### 4. Comparing VGGT confidence across experiments
+
+After running steps 1–3 (in particular, the `run_evaluation_views.py` →
+`aggregate_views.py` pipeline) for several experiments — for example one per
+`freeze_epoch` value — `aggregate_vggt_confidence.py` overlays their
+confidence-on-selections curves so freeze sweeps and ablations can be read
+off one figure each.
+
+```bash
+# Direct CLI (PATH or PATH:LABEL repeated)
+python3 scripts/aggregate_vggt_confidence.py \
+  --summary results/views/v01234/summary_no_freeze:no_freeze \
+  --summary results/views/v01234/summary_freeze_10:freeze_10 \
+  --summary results/views/v01234/summary_freeze_20:freeze_20 \
+  --model vggt \
+  --output_dir compare/vggt_confidence_freeze_sweep
+
+# Bash wrapper with hard-coded SUMMARIES=( ... ) array
+./scripts/run_aggregate_vggt_confidence.sh
+GPUS=4 STYLE=heatmap ./scripts/run_aggregate_vggt_confidence.sh
+```
+
+Outputs (in `--output_dir`):
+- `<model>_pair_<value>_over_epochs.png` — pair-level confidence per
+  experiment (e.g., `vggt_pair_agent_mean_over_epochs.png`).
+- `<model>_set_<value>_over_epochs.png` — joint set-level confidence per
+  experiment (VGGT and Pi3 only). Equivalent of the `image_mean` metric.
+- `aggregated.csv` — concatenated raw rows for ad-hoc analysis.
+
+Useful flags:
+- `--value {agent_mean | delta_mean | macro_agent | macro_delta | ...}` —
+  default `agent_mean` plots VGGT's confidence on the agent's selections;
+  `delta_mean` plots agent-minus-random advantage.
+- `--style {line,heatmap,both}` — heatmap makes many-experiment comparisons
+  much more readable.
+- `--bin_epochs N` — heatmap epoch axis collapsed to N bins.
+- `--smooth N` — line-plot rolling mean window.
+- `--title_suffix "..."` — extra title line.
+
 ### Reproducing trend plots
 
 The complete narrative for advisors is built from three independent probes:
@@ -281,8 +320,9 @@ The complete narrative for advisors is built from three independent probes:
 
 If all three order the five buckets the same way
 (`Expanded > Expanded-like > Remainder > Foreshortened > Foreshortened-like`),
-that's the cleanest "canonical informativeness" story across two independent
-models (one classification, one geometry) and an independent calibration probe.
+that's the cleanest "expanded-family informativeness" story across two
+independent models (one classification, one geometry) and an independent
+calibration probe.
 
 ### Extension layout
 

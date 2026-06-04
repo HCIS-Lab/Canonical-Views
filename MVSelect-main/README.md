@@ -125,11 +125,11 @@ plots into each experiment folder:
 | File | What it shows |
 |---|---|
 | `aggregated_view_ratios.png` | The original 5-bucket selection-ratio curves (Expanded / Expanded-like / Foreshortened / Foreshortened-like / Remainder) over training. |
-| `aggregated_view_canonicality.png` | **NEW**. Collapsed 2-curve view: `canonical = Expanded + Expanded-like` (green) vs `foreshortened = Foreshortened + Foreshortened-like` (red), with dashed horizontal lines at each bucket's chance-baseline share (3.5% / 14% / 1.7% / 7% / 73.8% of available views) and a vertical line marking the first epoch where canonical > foreshortened. ±SEM shaded across runs. |
-| `aggregated_view_canonicality_lift.png` | **NEW**. Same collapsed comparison plotted as **lift over chance** (`observed_share / available_share`). Horizontal reference at `1.0` = uniform random. Magnitude-aware view of preference strength independent of bucket sizes. |
+| `aggregated_view_family_ratios.png` | **NEW**. Collapsed 2-curve view: `expanded family = expanded + Expanded-like` (green) vs `foreshortened family = Foreshortened + Foreshortened-like` (red), with dashed horizontal lines at each group's chance-baseline share (combined: 17.5% / 8.7% / 73.8% of available views) and a vertical line marking the first epoch where expanded > foreshortened. ±SEM shaded across runs. |
+| `aggregated_view_family_lift.png` | **NEW**. Same collapsed family comparison plotted as **lift over chance** (`observed_share / available_share`). Horizontal reference at `1.0` = uniform random. Magnitude-aware view of preference strength independent of bucket sizes. |
 | `aggregated_per_class_accuracy.png` | **RESTYLED**. Per-class accuracy over epochs as a `class × epoch` viridis heatmap (was: 32 overlapping line curves). Much easier to spot which classes the agent is learning earliest. |
 | `aggregated_accuracy.png`, `_3.png`, `_5.png` | Per-view-type accuracies for N=1/3/5 view sets (unchanged). |
-| `aggregated_summary.json` | Adds a `canonicality` block: bucket priors, mean canonical/foreshortened/remainder curves, lift curves, and the crossing epoch. |
+| `aggregated_summary.json` | Adds a `view_family` block: bucket priors, mean expanded/foreshortened/remainder family curves, lift curves, and the crossing epoch. |
 | `pca_tsne/` (subfolder) | Per-epoch t-SNE plots produced by `pca_tsne.py` (see below). Two PNGs per epoch: one colored by view type, one colored by class. |
 
 The bucket priors are baked into `BUCKET_PRIOR` at the top of the file (the
@@ -266,6 +266,89 @@ default. The fixed-classifier protocol is the cleaner one for the
 "is selection improving?" question because it removes the confound of model
 improvement entirely.
 
+**Two protocols available:**
+
+| `--per_epoch_checkpoint` | What is held fixed | Curves answer |
+|---|---|---|
+| off (default) | the FINAL classifier | "How does the fully-trained model now see past selections?" — isolates selection-quality changes. |
+| on | the selections, model varies per epoch | "What reward signal was the agent getting at epoch t?" — what was driving view-selection changes during training. |
+
+The `--per_epoch_checkpoint` protocol requires per-epoch model snapshots,
+which the default training run does NOT save. Enable them via the new
+`--save_every_epoch N` flag in `main.py` (writes `model_e<E>.pth` every N
+epochs in addition to the rolling `model.pth`):
+
+```bash
+# Train with per-epoch checkpoints (1 = every epoch; ~5 GB for a 100-epoch run)
+python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
+  --dataset rgb --save_every_epoch 1
+
+# Lighter alternative: snapshot every 5 epochs (~1 GB for a 100-epoch run)
+python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
+  --dataset rgb --save_every_epoch 5
+```
+
+Then run the temporal test in classifier-at-epoch-t mode:
+
+```bash
+python temporal_selection_test.py \
+  --selection_dir meta_logs/rgb/.../e100 \
+  --dataset rgb --non_roll --num_train_instances 25 \
+  --per_epoch_checkpoint
+```
+
+If `--save_every_epoch 5` was used, epochs without a saved snapshot (1, 2, 3,
+4, 6, 7, ...) are simply skipped — the plots will show only the snapshotted
+epochs (5, 10, 15, ...). The script prints which epochs were skipped at the
+end of the run.
+
+The plot titles indicate which protocol was used (`final classifier held
+fixed` vs `classifier-at-epoch-t`) so figures from the two modes don't get
+mixed up.
+
+### Aggregating temporal-test runs across experiments (`aggregate_temporal_tests.py`)
+
+`temporal_selection_test.py` outputs one set of plots per experiment, each with
+its own y-axis range — making side-by-side comparison awkward. This script
+reads `<exp>/temporal_test/temporal_test.csv` from any list of experiments and
+overlays their curves on a single figure per metric, with a shared y-axis. No
+re-running of the eval required.
+
+```bash
+# Direct: list experiments on the CLI (PATH or PATH:LABEL syntax)
+python3 aggregate_temporal_tests.py \
+  --exp resnet18steps3_train_ins25_lr0.0005..._e100:no_freeze \
+  --exp freeze_10_resnet18steps3_train_ins25_lr0.0005..._e100:freeze_10 \
+  --exp freeze_20_resnet18steps3_train_ins25_lr0.0005..._e100:freeze_20 \
+  --dataset rgb \
+  --output_dir compare/steps3_freeze_sweep
+
+# Or use the bash wrapper that holds the experiment list in an editable array
+./run_aggregate_temporal_tests.sh
+```
+
+Outputs (in `--output_dir`):
+- `deviation_rotate.png`, `deviation_jitter.png`, `deviation_rotate_jitter.png`
+  — one line per experiment for each manipulation type.
+- `margin_over_time.png` — one line per experiment.
+- `aggregated.csv` — concatenated raw rows with an `experiment` column for
+  ad-hoc analysis.
+
+Useful CLI flags: `--smooth N` applies a rolling-mean window (default 1 = off);
+`--ymax_dev` / `--ymax_margin` force consistent y-axis caps when comparing
+multiple comparison sets; `--title_suffix "..."` adds a second title line;
+`--style {line,heatmap,both}` switches plot style — `heatmap` produces an
+`experiments × epochs` grid (rows = experiments, color = deviation/margin)
+which is much easier to read than overlaid lines when there are many
+experiments; `--bin_epochs N` collapses the heatmap's epoch axis into N
+bins for an even more compact view. The bash wrapper also exposes
+`STYLE=heatmap` and `BIN_EPOCHS=20` env vars.
+
+Edit the `EXPS=( ... )` array at the top of `run_aggregate_temporal_tests.sh`
+to define a comparison set, plus the env vars at the top (`COMPARISON_NAME`,
+`DATASET`, `SMOOTH`, `YMAX_DEV`, `YMAX_MARGIN`) to tune the run without
+editing the script body.
+
 ### Zero-shot single-view classification probe
 
 After stage-1 training (`main.py --steps 0`), MVSelect writes a
@@ -372,7 +455,7 @@ two don't collide, e.g.:
    --steps 5 --num_train_instances 25 --dataset rgb`. This auto-loads the
    stage-1 checkpoint via `<arch>_performance.txt`.
 3. **Aggregate training logs.** `python aggregate_meta_json.py` for the
-   canonicality / lift / per-class-accuracy plots above.
+   family-ratio / lift / per-class-accuracy plots above.
 4. **Probe view-type informativeness.** `python zero_shot_view_type_test.py`
    for the MVCNN classifier's per-bucket accuracy.
 5. **Probe model uncertainty on agent selections.** In `human_multiview-main/`:
