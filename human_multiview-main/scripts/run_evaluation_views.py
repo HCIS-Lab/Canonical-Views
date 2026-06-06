@@ -63,7 +63,7 @@ def parse_args():
                    default="/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/modelnet_32_60_1_23",
                    help="Root of modelnet_32_60_1_23 (per-class subfolders).")
     p.add_argument("--selection_dir", type=str,
-                   default="/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/MVSelect-main/meta_logs/rgb/resnet18steps5_train_ins25_lr1e-05base1.0other1.0select_wd0.0001select0.0001_e100",
+                   default="/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/MVSelect-main/meta_logs/rgb/resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100",
                    help="Folder containing the agent's *_selection.json files.")
     p.add_argument("--selected_view_type", type=str, default="01234",
                    help="Digits 0-4 selecting view-type buckets from VIEW_TYPE_LIST.")

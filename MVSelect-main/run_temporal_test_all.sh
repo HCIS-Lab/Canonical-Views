@@ -13,11 +13,16 @@
 #   NON_LIKE=0                pass --non_like
 #   NUM_TRAIN_INSTANCES=25
 #   MAX_EPOCHS=               optional smoke-test cap
+#   PER_EPOCH_CHECKPOINT=1    model-at-t protocol (default; needs training to
+#                             have been run with --save_every_epoch >0). Set
+#                             to 0 to use the final classifier instead (the
+#                             original fixed-classifier protocol).
 #
 # Examples:
-#   ./run_temporal_test_all.sh                       # all reps, single GPU
-#   GPUS=4 ./run_temporal_test_all.sh                # 4-GPU round-robin
-#   REP_LIST=rgb MAX_EPOCHS=5 ./run_temporal_test_all.sh   # smoke test
+#   ./run_temporal_test_all.sh                            # model-at-t (default)
+#   GPUS=4 ./run_temporal_test_all.sh                     # 4-GPU round-robin
+#   PER_EPOCH_CHECKPOINT=0 ./run_temporal_test_all.sh     # fixed final classifier
+#   REP_LIST=rgb MAX_EPOCHS=5 ./run_temporal_test_all.sh  # smoke test
 
 set -uo pipefail
 
@@ -30,12 +35,14 @@ NON_ROLL="${NON_ROLL:-1}"
 NON_LIKE="${NON_LIKE:-0}"
 NUM_TRAIN_INSTANCES="${NUM_TRAIN_INSTANCES:-25}"
 MAX_EPOCHS="${MAX_EPOCHS:-}"
+PER_EPOCH_CHECKPOINT="${PER_EPOCH_CHECKPOINT:-1}"
 
 # Pass-through flags
 extra_flags=""
 [ "${NON_ROLL}" = "1" ] && extra_flags="${extra_flags} --non_roll"
 [ "${NON_LIKE}" = "1" ] && extra_flags="${extra_flags} --non_like"
 [ -n "${MAX_EPOCHS}" ] && extra_flags="${extra_flags} --max_epochs ${MAX_EPOCHS}"
+[ "${PER_EPOCH_CHECKPOINT}" = "1" ] && extra_flags="${extra_flags} --per_epoch_checkpoint"
 
 echo "=========================================="
 echo "Temporal selection test — sweep"
@@ -47,6 +54,7 @@ echo "  NON_ROLL  = ${NON_ROLL}"
 echo "  NON_LIKE  = ${NON_LIKE}"
 echo "  NUM_INS   = ${NUM_TRAIN_INSTANCES}"
 echo "  MAX_EPOCH = ${MAX_EPOCHS:-(all)}"
+echo "  PROTOCOL  = $([ "${PER_EPOCH_CHECKPOINT}" = "1" ] && echo 'classifier-at-epoch-t (--per_epoch_checkpoint)' || echo 'final classifier (fixed)')"
 echo "=========================================="
 
 if [ ! -d "${META_LOGS}" ]; then

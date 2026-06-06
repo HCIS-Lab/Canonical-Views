@@ -224,9 +224,12 @@ python temporal_selection_test.py \
   --dataset rgb --non_roll --num_train_instances 25 \
   --max_epochs 10
 
-# Sweep every stage-2 experiment in meta_logs/ in one go
-./run_temporal_test_all.sh                # single GPU
-GPUS=4 ./run_temporal_test_all.sh         # round-robin across 4 GPUs
+# Sweep every stage-2 experiment in meta_logs/ in one go.
+# Default: --per_epoch_checkpoint ON (classifier-at-epoch-t protocol — needs
+# training to have been run with --save_every_epoch >0).
+./run_temporal_test_all.sh                                        # single GPU, model-at-t
+GPUS=4 ./run_temporal_test_all.sh                                 # 4-GPU round-robin
+PER_EPOCH_CHECKPOINT=0 ./run_temporal_test_all.sh                 # use fixed final classifier instead
 ```
 
 **Path resolution.** `--selection_dir` accepts either the bare experiment
@@ -305,6 +308,15 @@ end of the run.
 The plot titles indicate which protocol was used (`final classifier held
 fixed` vs `classifier-at-epoch-t`) so figures from the two modes don't get
 mixed up.
+
+**Sweep-wrapper default.** `run_temporal_test_all.sh` defaults to
+`PER_EPOCH_CHECKPOINT=1`, i.e. the **classifier-at-epoch-t** protocol — the
+more diagnostic one for "what was driving view-selection change?" It assumes
+the underlying training runs were done with `--save_every_epoch >0` so the
+per-epoch snapshots exist; for any experiment that doesn't have them, the
+test errors out cleanly into that experiment's `run.log` and the sweep
+continues to the next one. To force the original fixed-final-classifier
+protocol on a sweep, pass `PER_EPOCH_CHECKPOINT=0`.
 
 ### Aggregating temporal-test runs across experiments (`aggregate_temporal_tests.py`)
 

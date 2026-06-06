@@ -25,6 +25,8 @@ SUMMARIES=(
     "results/views/v01234/summary_freeze_10:freeze_10"
     "results/views/v01234/summary_freeze_20:freeze_20"
     "results/views/v01234/summary_freeze_30:freeze_30"
+    "results/views/v01234/summary_freeze_40:freeze_40"
+    "results/views/v01234/summary_freeze_50:freeze_50"
     # Add more lines as needed.
 )
 
