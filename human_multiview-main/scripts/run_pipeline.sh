@@ -6,7 +6,14 @@
 #   LIMIT=5 ./scripts/run_pipeline.sh                 # smoke test
 #   MODELS="vggt" GPUS=2 ./scripts/run_pipeline.sh
 #
-# Defaults reproduce the 10-epoch-group VGGT+DINOv2 run across all 5 view buckets.
+#   # Point at a specific MVSelect experiment's selection_dir and write all
+#   # artifacts (CSVs / summary / plots) into a custom subfolder:
+#   SELECTION_DIR=/path/to/meta_logs/rgb/<exp> \
+#   OUTPUT_DIR=results/views/v01234/no_freeze \
+#       ./scripts/run_pipeline.sh
+#
+# Defaults reproduce the 10-epoch-group VGGT+DINOv2 run across all 5 view buckets,
+# pointing at the default --selection_dir baked into run_evaluation_views.py.
 
 set -euo pipefail
 
@@ -19,14 +26,20 @@ NUM_CAM="${NUM_CAM:-5}"
 SPLIT="${SPLIT:-test}"
 PER_CLS="${PER_CLS:-5}"
 LIMIT="${LIMIT:-}"
+SELECTION_DIR="${SELECTION_DIR:-}"   # empty = use python script's default
 
 # --- Derived paths ---
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUT_DIR="${ROOT_DIR}/results/views/v${VIEW_TYPE}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/results/views/v${VIEW_TYPE}}"
 SUMMARY_DIR="${OUTPUT_DIR}/summary"
 PLOTS_DIR="${OUTPUT_DIR}/plots"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${OUTPUT_DIR}" "${SUMMARY_DIR}" "${PLOTS_DIR}" "${LOG_DIR}"
+
+SELECTION_DIR_FLAG=""
+if [ -n "${SELECTION_DIR}" ]; then
+    SELECTION_DIR_FLAG="--selection_dir ${SELECTION_DIR}"
+fi
 
 LIMIT_FLAG=""
 if [ -n "${LIMIT}" ]; then
@@ -44,6 +57,7 @@ echo "  SPLIT        = ${SPLIT}"
 echo "  PER_CLS      = ${PER_CLS}"
 echo "  LIMIT        = ${LIMIT:-(none)}"
 echo "  Output dir   = ${OUTPUT_DIR}"
+echo "  Selection dir = ${SELECTION_DIR:-(script default)}"
 echo "=========================================="
 
 # --- Step 1: Launch N sharded evaluations in parallel ---
@@ -61,6 +75,8 @@ for i in $(seq 0 $((GPUS - 1))); do
         --split "${SPLIT}" \
         --per_cls_instances "${PER_CLS}" \
         --shard "${i}/${GPUS}" \
+        --output_dir "${OUTPUT_DIR}" \
+        ${SELECTION_DIR_FLAG} \
         ${LIMIT_FLAG} \
         > "${log_file}" 2>&1 &
     pids+=($!)

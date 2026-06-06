@@ -19,14 +19,19 @@ COMPARISON_NAME="${COMPARISON_NAME:-vggt_confidence_freeze_sweep}"
 MODEL="${MODEL:-vggt}"
 VALUE="${VALUE:-agent_mean}"          # agent_mean | delta_mean | macro_agent | ...
 
-# Each SUMMARY entry points at <results>/views/v<vt>/summary/ for one experiment
+# Each entry: "<path_to_summary_dir>[:LABEL]"
+#
+# Paths below match the per-experiment layout produced by
+# run_views_pipeline_sweep.sh — one summary folder per experiment under
+# results/views/v<VIEW_TYPE>/<exp_label>/summary/.
+# If you ran the sweep with a different layout, edit accordingly.
 SUMMARIES=(
-    "results/views/v01234/summary_no_freeze:no_freeze"
-    "results/views/v01234/summary_freeze_10:freeze_10"
-    "results/views/v01234/summary_freeze_20:freeze_20"
-    "results/views/v01234/summary_freeze_30:freeze_30"
-    "results/views/v01234/summary_freeze_40:freeze_40"
-    "results/views/v01234/summary_freeze_50:freeze_50"
+    "results/views/v01234/no_freeze/summary:no_freeze"
+    "results/views/v01234/freeze_10/summary:freeze_10"
+    "results/views/v01234/freeze_20/summary:freeze_20"
+    "results/views/v01234/freeze_30/summary:freeze_30"
+    "results/views/v01234/freeze_40/summary:freeze_40"
+    "results/views/v01234/freeze_50/summary:freeze_50"
     # Add more lines as needed.
 )
 

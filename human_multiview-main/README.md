@@ -269,33 +269,106 @@ A "same-bucket pair" is two **different** views drawn from the same view-type
 bucket, not the same view twice. The Identical column is the only condition
 that feeds two identical images to the model.
 
-### 4. Comparing VGGT confidence across experiments
+### 4. Comparing VGGT confidence across experiments (e.g., a freeze sweep)
 
-After running steps 1–3 (in particular, the `run_evaluation_views.py` →
-`aggregate_views.py` pipeline) for several experiments — for example one per
-`freeze_epoch` value — `aggregate_vggt_confidence.py` overlays their
-confidence-on-selections curves so freeze sweeps and ablations can be read
-off one figure each.
+**Two-step workflow.** The final overlay plots from
+`aggregate_vggt_confidence.py` consume **`overall_summary.csv` files that
+must already exist for each experiment you want to compare.** Those files are
+produced by running the per-experiment VGGT pipeline (step A below). Then the
+aggregator (step B) overlays the curves onto shared figures.
+
+This step requires that the MVSelect repo's `meta_logs/<dataset>/<exp>/`
+folders already exist — i.e. stage-2 training has been run for each
+experiment, producing the `*_selection.json` files the VGGT pipeline reads.
+
+#### A. Run the per-experiment VGGT pipeline (once per MVSelect experiment)
+
+For each MVSelect experiment you want to compare, the per-experiment pipeline
+needs to write its own `overall_summary.csv` into a unique folder. Two ways:
+
+**A.1 (recommended) — sweep wrapper.** Edit the `EXPS=( ... )` array at the
+top of `scripts/run_views_pipeline_sweep.sh` to list the MVSelect experiment
+folder names + short labels, then run it once. The wrapper invokes
+`run_pipeline.sh` per experiment with the right `SELECTION_DIR` /
+`OUTPUT_DIR`, populating
+
+```
+results/views/v<VIEW_TYPE>/<exp_label>/
+├── vggt_views.csv (and _shard*.csv)
+├── dinov2_views.csv
+├── summary/
+│   ├── per_class_summary.csv
+│   └── overall_summary.csv      ← what step B reads
+├── plots/                       ← per-experiment plots
+└── logs/                        ← per-shard logs
+```
+
+for every experiment.
 
 ```bash
-# Direct CLI (PATH or PATH:LABEL repeated)
+cd human_multiview-main
+
+# Edit EXPS=( ... ) in this file, then:
+./scripts/run_views_pipeline_sweep.sh
+
+# Smoke test on the first 10 trials per experiment
+LIMIT=10 ./scripts/run_views_pipeline_sweep.sh
+```
+
+Each experiment runs sequentially and uses all `GPUS` GPUs internally via
+sharding. With ~6 experiments and `GPUS=4`, expect roughly N × 15–20 minutes.
+
+**A.2 — manual one-experiment-at-a-time.** If you want to launch experiments
+individually (e.g., on different machines), call `run_pipeline.sh` with the
+new `SELECTION_DIR` and `OUTPUT_DIR` env vars:
+
+```bash
+SELECTION_DIR=/abs/path/to/MVSelect-main/meta_logs/rgb/<exp_folder> \
+OUTPUT_DIR=results/views/v01234/no_freeze \
+  ./scripts/run_pipeline.sh
+
+SELECTION_DIR=/abs/path/to/MVSelect-main/meta_logs/rgb/freeze_10_<exp_folder> \
+OUTPUT_DIR=results/views/v01234/freeze_10 \
+  ./scripts/run_pipeline.sh
+# ... once per experiment
+```
+
+The default `--selection_dir` baked into `run_evaluation_views.py` only
+covers one specific path — every additional experiment **must** set
+`SELECTION_DIR` explicitly, otherwise the wrapper just re-evaluates the same
+default experiment under different output folders.
+
+#### B. Overlay the experiments' curves
+
+Once every experiment has a populated `summary/overall_summary.csv`, run the
+aggregator. It reads each experiment's `overall_summary.csv` and overlays
+the pair-level and set-level confidence curves:
+
+```bash
+# Bash wrapper with hard-coded SUMMARIES=( ... ) (default labels match the
+# layout produced by run_views_pipeline_sweep.sh above).
+./scripts/run_aggregate_vggt_confidence.sh
+
+# Many experiments → heatmap is much more readable than overlaid lines
+STYLE=heatmap ./scripts/run_aggregate_vggt_confidence.sh
+
+# Plot agent-over-random advantage instead of raw confidence
+VALUE=delta_mean ./scripts/run_aggregate_vggt_confidence.sh
+
+# Or call the python script directly
 python3 scripts/aggregate_vggt_confidence.py \
-  --summary results/views/v01234/summary_no_freeze:no_freeze \
-  --summary results/views/v01234/summary_freeze_10:freeze_10 \
-  --summary results/views/v01234/summary_freeze_20:freeze_20 \
+  --summary results/views/v01234/no_freeze/summary:no_freeze \
+  --summary results/views/v01234/freeze_10/summary:freeze_10 \
+  --summary results/views/v01234/freeze_20/summary:freeze_20 \
   --model vggt \
   --output_dir compare/vggt_confidence_freeze_sweep
-
-# Bash wrapper with hard-coded SUMMARIES=( ... ) array
-./scripts/run_aggregate_vggt_confidence.sh
-GPUS=4 STYLE=heatmap ./scripts/run_aggregate_vggt_confidence.sh
 ```
 
 Outputs (in `--output_dir`):
-- `<model>_pair_<value>_over_epochs.png` — pair-level confidence per
-  experiment (e.g., `vggt_pair_agent_mean_over_epochs.png`).
-- `<model>_set_<value>_over_epochs.png` — joint set-level confidence per
-  experiment (VGGT and Pi3 only). Equivalent of the `image_mean` metric.
+- `<model>_pair_<value>_over_epochs.png` — pair-level VGGT confidence per
+  experiment (or `_heatmap.png` for the heatmap version).
+- `<model>_set_<value>_over_epochs.png` — joint set-level confidence
+  (VGGT/Pi3 only — equivalent of the `image_mean` metric).
 - `aggregated.csv` — concatenated raw rows for ad-hoc analysis.
 
 Useful flags:
@@ -307,6 +380,19 @@ Useful flags:
 - `--bin_epochs N` — heatmap epoch axis collapsed to N bins.
 - `--smooth N` — line-plot rolling mean window.
 - `--title_suffix "..."` — extra title line.
+
+#### Troubleshooting "no overall_summary.csv at ..."
+
+If the aggregator prints `SKIP <label>: no overall_summary.csv at <path>`,
+step A hasn't been run for that experiment yet (or was run with a different
+`OUTPUT_DIR`). Two things to check:
+
+1. Does `<path>/overall_summary.csv` exist? If not, run step A for that
+   experiment — `run_views_pipeline_sweep.sh` is the most foolproof way.
+2. Does `run_aggregate_vggt_confidence.sh`'s `SUMMARIES` list match the
+   folder names that step A actually wrote? The default in this repo expects
+   `results/views/v01234/<exp_label>/summary/` (matching the sweep wrapper).
+   If you used a different layout, edit one of the two to match.
 
 ### Reproducing trend plots
 
