@@ -376,7 +376,10 @@ Useful flags:
   default `agent_mean` plots VGGT's confidence on the agent's selections;
   `delta_mean` plots agent-minus-random advantage.
 - `--style {line,heatmap,both}` — heatmap makes many-experiment comparisons
-  much more readable.
+  much more readable. **The bash wrapper defaults to `STYLE=heatmap`**;
+  pass `STYLE=line` to fall back to line plots, or `STYLE=both` for both.
+  Heatmap output uses a `_heatmap.png` suffix so the two styles don't
+  overwrite each other.
 - `--bin_epochs N` — heatmap epoch axis collapsed to N bins.
 - `--smooth N` — line-plot rolling mean window.
 - `--title_suffix "..."` — extra title line.

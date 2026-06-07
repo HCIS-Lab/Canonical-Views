@@ -35,7 +35,7 @@ SUMMARIES=(
     # Add more lines as needed.
 )
 
-STYLE="${STYLE:-line}"               # line | heatmap | both
+STYLE="${STYLE:-heatmap}"            # line | heatmap | both  (default heatmap: easier to read with many experiments)
 BIN_EPOCHS="${BIN_EPOCHS:-0}"
 SMOOTH="${SMOOTH:-1}"
 TITLE_SUFFIX="${TITLE_SUFFIX:-}"

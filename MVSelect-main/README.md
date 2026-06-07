@@ -353,8 +353,17 @@ multiple comparison sets; `--title_suffix "..."` adds a second title line;
 `experiments × epochs` grid (rows = experiments, color = deviation/margin)
 which is much easier to read than overlaid lines when there are many
 experiments; `--bin_epochs N` collapses the heatmap's epoch axis into N
-bins for an even more compact view. The bash wrapper also exposes
-`STYLE=heatmap` and `BIN_EPOCHS=20` env vars.
+bins for an even more compact view.
+
+**The bash wrapper defaults to `STYLE=heatmap`** because overlaid lines get
+unreadable past ~4 experiments. Pass `STYLE=line` to fall back to line plots,
+or `STYLE=both` to write both versions. Heatmap output goes to
+`<output_dir>/deviation_<cond>_heatmap.png` (note the `_heatmap` suffix) —
+the line-mode files keep their original names, so the two styles never
+overwrite each other. If you previously ran in line mode and only see the
+old `deviation_<cond>.png` files in the output dir, the new heatmaps are
+sitting next to them under the `_heatmap.png` names; or just clear the
+folder and re-run.
 
 Edit the `EXPS=( ... )` array at the top of `run_aggregate_temporal_tests.sh`
 to define a comparison set, plus the env vars at the top (`COMPARISON_NAME`,

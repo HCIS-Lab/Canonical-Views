@@ -37,8 +37,8 @@ SMOOTH="${SMOOTH:-1}"               # rolling mean window (1 = off)
 YMAX_DEV="${YMAX_DEV:-}"             # cap deviation plots at this % (empty = auto)
 YMAX_MARGIN="${YMAX_MARGIN:-}"       # cap margin plot (empty = auto)
 TITLE_SUFFIX="${TITLE_SUFFIX:-}"     # extra title line
-STYLE="${STYLE:-line}"               # line | heatmap | both
-BIN_EPOCHS="${BIN_EPOCHS:-0}"        # bin epochs into N columns (heatmap only)
+STYLE="${STYLE:-heatmap}"            # line | heatmap | both  (default heatmap: easier to read with many experiments)
+BIN_EPOCHS="${BIN_EPOCHS:-0}"        # bin epochs into N columns (heatmap only; 0 = no binning)
 
 OUTPUT_DIR="${ROOT_DIR}/compare/${COMPARISON_NAME}"
 
