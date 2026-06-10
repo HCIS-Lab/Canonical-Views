@@ -60,6 +60,9 @@ def parse_args():
     p.add_argument("--pca_dim", type=int, default=50,
                    help="Intermediate PCA dim before t-SNE.")
     p.add_argument("--perplexity", type=float, default=30.0)
+    p.add_argument("--every_n_epochs", type=int, default=None,
+                   help="If set, only compute t-SNE for epochs where epoch %% N == 0. "
+                        "Useful when feature dumps span an uneven epoch cadence.")
     p.add_argument("--overwrite", action="store_true",
                    help="By default, skip an experiment+epoch if both plots exist.")
     return p.parse_args()
@@ -132,6 +135,8 @@ def process_experiment(rep, exp, exp_root, args):
     all_epochs = set()
     for run_dir in run_dirs:
         all_epochs.update(discover_epochs(run_dir))
+    if args.every_n_epochs and args.every_n_epochs > 1:
+        all_epochs = {e for e in all_epochs if e % args.every_n_epochs == 0}
     if not all_epochs:
         return
 

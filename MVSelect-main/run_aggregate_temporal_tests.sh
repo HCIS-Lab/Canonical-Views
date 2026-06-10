@@ -37,7 +37,11 @@ SMOOTH="${SMOOTH:-1}"               # rolling mean window (1 = off)
 YMAX_DEV="${YMAX_DEV:-}"             # cap deviation plots at this % (empty = auto)
 YMAX_MARGIN="${YMAX_MARGIN:-}"       # cap margin plot (empty = auto)
 TITLE_SUFFIX="${TITLE_SUFFIX:-}"     # extra title line
-STYLE="${STYLE:-heatmap}"            # line | heatmap | both  (default heatmap: easier to read with many experiments)
+STYLE="${STYLE:-heatmap}"            # line | heatmap | sorted_bars | rank_stacked | both | all
+                                     #   default heatmap: easier than overlaid lines for many experiments
+                                     #   sorted_bars: grouped bars per epoch sorted left→right by value
+                                     #                (real y-axis; rank flips show as colour reshuffles)
+                                     #   rank_stacked: same idea but stacked (y-axis is a sum)
 BIN_EPOCHS="${BIN_EPOCHS:-0}"        # bin epochs into N columns (heatmap only; 0 = no binning)
 
 OUTPUT_DIR="${ROOT_DIR}/compare/${COMPARISON_NAME}"

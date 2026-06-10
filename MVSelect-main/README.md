@@ -179,6 +179,93 @@ Skips experiments where no `feature_<E>.npz` files were dumped (e.g. stage-1
 runs that didn't save features). Uses cupy + cuml for GPU acceleration; falls
 back gracefully per-experiment if t-SNE fails on a particular epoch.
 
+### Cluster-quality metrics over training (`compute_cluster_metrics.py` + `aggregate_cluster_metrics.py`)
+
+`pca_tsne.py` gives a qualitative picture. To track cluster development
+**quantitatively** across experiments, two new scripts compute silhouette
+scores on the same per-epoch feature dumps and overlay them across the
+freeze sweep (or any experiment list) in the standard plot styles
+(`line`, `heatmap`, `sorted_bars`, `rank_stacked`).
+
+Three metrics per epoch:
+
+| metric | meaning | desired direction over training |
+|---|---|---|
+| `silhouette_class` | how cleanly features cluster by 32-class label (cosine dist, L2-normalized) | **up** — model learning class identity |
+| `silhouette_view` | how cleanly features cluster by 5-bucket view-type label | **down** — features becoming view-invariant |
+| `separability` | `silhouette_class − silhouette_view` | **up** — class-aware AND view-invariant |
+
+All three are bounded in [-1, 1] (silhouette range). `separability` is the
+single scalar that captures the "class identity + view invariance"
+trajectory in one number.
+
+Two-step pipeline:
+
+```bash
+cd MVSelect-main
+
+# Step 1: walk meta_logs/, compute cluster_metrics.csv per experiment
+#         (idempotent — re-runs are a no-op unless --overwrite)
+python3 compute_cluster_metrics.py --rep_list rgb
+
+# Step 2: overlay the EXPS list (edit array at the top of the wrapper)
+./run_cluster_metrics_pipeline.sh           # default heatmap
+STYLE=sorted_bars ./run_cluster_metrics_pipeline.sh
+METRICS="separability" STYLE=line BIN_EPOCHS=20 ./run_cluster_metrics_pipeline.sh
+OVERWRITE=1 ./run_cluster_metrics_pipeline.sh   # force recompute step 1
+```
+
+The wrapper runs step 1 then step 2 in sequence; if step 1 has already
+populated CSVs from a previous run it skips them (re-aggregation alone is
+fast).
+
+Outputs (under `compare/<COMPARISON_NAME>/`):
+- `<metric>_line.png` / `<metric>_heatmap.png` / `<metric>_sorted_bars.png` /
+  `<metric>_rank_stacked.png` — one per requested metric × style.
+- `aggregated.csv` — concatenated `(experiment, epoch, metric_values)` rows.
+
+Practical notes:
+- **Sample cost**: silhouette is O(n²). Default `MAX_SAMPLES=2000` keeps each
+  epoch's computation under a second. Bump to 5000 for tighter estimates,
+  drop to 500–1000 for a smoke test.
+- **Requires saved features.** Step 1 reads `feature_<E>.npz` files, which
+  only exist if training was run with `--save_feature`. If no features are
+  saved for an experiment, that experiment is silently skipped.
+- **Aggregate across runs**: when multiple training runs exist under one
+  experiment folder, step 1 averages their per-epoch silhouette scores into
+  a single row.
+
+**Epoch-density filter (`--every_n_epochs N` / `EVERY_N_EPOCHS=N`).** The
+**feature dumps** (`feature_<E>.npz` files used by silhouette / t-SNE) were
+trained with an uneven cadence — every epoch through 1–20, then every 10
+afterwards — so their epoch grid is unevenly spaced. The
+`--every_n_epochs N` flag keeps only epochs where `epoch % N == 0`,
+collapsing that uneven set down to a clean 10, 20, …, 100 grid. Scripts
+that read features:
+
+- `compute_cluster_metrics.py` — input filter (skips silhouette computation
+  for unneeded epochs).
+- `aggregate_cluster_metrics.py` — output filter (drops rows post-load).
+- `pca_tsne.py` — input filter (skips t-SNE for unneeded epochs).
+
+The cluster-metrics bash wrapper (`run_cluster_metrics_pipeline.sh`)
+defaults to `EVERY_N_EPOCHS=10`; set `EVERY_N_EPOCHS=1` (or `0`) to disable.
+
+**Other analyses are unaffected** — `selection.json`, training-time test
+accuracies, and per-epoch model checkpoints are saved every epoch through
+training, so `temporal_selection_test.py`, `aggregate_temporal_tests.py`,
+and `aggregate_vggt_confidence.py` already see a regular epoch grid by
+construction and need no filter.
+
+What to look for in the freeze sweep:
+- `silhouette_class` rising more sharply / earlier under `freeze_30/40/50`
+  → those settings build class identity faster.
+- `silhouette_view` dropping faster under any setting → that setting
+  produces more view-invariant representations.
+- `separability` curves' eventual height + crossover patterns answer "which
+  setting buys the most class-aware, view-invariant representation per
+  epoch?" in one chart.
+
 ### Temporal selection test — manipulation robustness + margin stability (`temporal_selection_test.py`)
 
 Replay an experiment's per-epoch agent selections through the **final**
@@ -356,14 +443,30 @@ experiments; `--bin_epochs N` collapses the heatmap's epoch axis into N
 bins for an even more compact view.
 
 **The bash wrapper defaults to `STYLE=heatmap`** because overlaid lines get
-unreadable past ~4 experiments. Pass `STYLE=line` to fall back to line plots,
-or `STYLE=both` to write both versions. Heatmap output goes to
-`<output_dir>/deviation_<cond>_heatmap.png` (note the `_heatmap` suffix) —
-the line-mode files keep their original names, so the two styles never
-overwrite each other. If you previously ran in line mode and only see the
-old `deviation_<cond>.png` files in the output dir, the new heatmaps are
-sitting next to them under the `_heatmap.png` names; or just clear the
-folder and re-run.
+unreadable past ~4 experiments. Other options:
+
+- `STYLE=line` — original overlaid-lines plots (`deviation_<cond>.png`).
+- `STYLE=heatmap` — `experiments × epochs` grid; rows = experiments, color =
+  deviation/margin (`deviation_<cond>_heatmap.png`).
+- `STYLE=sorted_bars` — grouped bars per epoch sorted **left-to-right by
+  value** (largest leftmost). Same experiment = same colour throughout, so
+  when one experiment overtakes another, its colour block changes horizontal
+  position within the epoch group. Y-axis is the actual value (not a sum), so
+  the magnitudes are directly readable
+  (`deviation_<cond>_sorted_bars.png`). **This is the recommended choice if
+  you want both rank changes and meaningful y-axis values.**
+- `STYLE=rank_stacked` — same idea but stacked **vertically** (segments
+  ordered by value at each epoch). Compact, but the total bar height is the
+  sum of values across experiments — not directly meaningful, so the y-axis
+  reads as a derived quantity rather than a real magnitude
+  (`deviation_<cond>_rank_stacked.png`).
+- `STYLE=both` = line + heatmap. `STYLE=all` = every style.
+
+Heatmap and rank_stacked outputs use `_heatmap.png` / `_rank_stacked.png`
+suffixes; line-mode files keep their original names, so styles never overwrite
+each other. If you previously ran in line mode and only see the old
+`deviation_<cond>.png` files in the output dir, the new files are sitting
+next to them under the suffixed names; or just clear the folder and re-run.
 
 Edit the `EXPS=( ... )` array at the top of `run_aggregate_temporal_tests.sh`
 to define a comparison set, plus the env vars at the top (`COMPARISON_NAME`,
@@ -402,6 +505,62 @@ per-run accuracy from existing `restricted_view_test` callsites, the function
 now accepts an `n_runs=` kwarg (default 10) and returns the per-run accuracy
 array in the 4th element of its return tuple — old callers ignore the extra
 data.
+
+**A note on what's actually zero-shot.** The MVCNN classifier above was
+trained on ModelNet, so calling it "zero-shot" is only true relative to the
+view-type *labels* (the classifier doesn't know which bucket a view is
+from). For a probe that's zero-shot in the stronger sense — a model that has
+never seen ModelNet at all — see the CLIP-based probe below.
+
+### CLIP zero-shot single-view classification probe (`clip_zero_shot_view_type.py`)
+
+Same protocol as the MVCNN probe (one random view per instance per
+view-type bucket, repeated N times), but the classifier is **CLIP** instead
+of the stage-1 MVCNN — CLIP was trained on web image-text pairs and has
+never seen ModelNet, so the result is a genuinely zero-shot reading of view
+informativeness. Classification is done by encoding the image with CLIP's
+image tower, encoding per-class text prompts with CLIP's text tower, and
+taking cosine similarity. Top-1 and top-5 accuracy are both reported.
+
+```bash
+# Default: ViT-B/32, 5-template 3D-aware prompt ensemble, 25 instances/class × 5 runs
+python clip_zero_shot_view_type.py
+
+# Bigger CLIP — slower but stronger zero-shot
+python clip_zero_shot_view_type.py --clip_model openai/clip-vit-large-patch14
+
+# Single-template prompts ("a photo of a X") instead of the 3D ensemble
+python clip_zero_shot_view_type.py --no_prompt_ensemble
+
+# Smoke test on 10 instances
+python clip_zero_shot_view_type.py --limit 10
+```
+
+Outputs (default `logs/clip_zero_shot_view_test/`):
+- `bar_top1.png` / `bar_top5.png` — 5 bars per view type, mean ± std.
+- `per_class_top1_heatmap.png` / `per_class_top5_heatmap.png` — view_type ×
+  class accuracy heatmaps (viridis, 0–100%).
+- `results.csv` — per (run, instance, view_type) row with predicted class,
+  top-5 indices, and binary correctness flags. Easy to slice for ad-hoc
+  analyses (e.g., per-class confusion matrices).
+
+What to look for:
+- If `bar_top1.png` orders view types **the same way** as the MVCNN probe's
+  bar chart — Expanded > Expanded-like > Remainder > Foreshortened >
+  Foreshortened-like (or similar) — that's strong evidence that the
+  ordering is about the views' *intrinsic informativeness for a generic
+  visual classifier*, not about anything ModelNet- or MVCNN-specific.
+- If CLIP gives a different ordering than MVCNN, that's interesting on its
+  own — the discrepancy tells you which buckets MVCNN learned to use that
+  a generic vision-language model wouldn't.
+- Absolute accuracy: don't expect MVCNN-level numbers. CLIP zero-shot on
+  ModelNet renders is typically 30–50% top-1, 60–80% top-5 — the relative
+  ordering matters more than the magnitude.
+
+Prerequisites:
+- `transformers` (already in your conda env if you've been using VGGT/Pi3).
+- ~$\sim$2GB GPU memory for ViT-B/32; ~6GB for ViT-L/14.
+- ~5–10 min on one GPU for a default run (~4000 CLIP forwards in batches).
 
 ### Multiple `--freeze_epoch` runs
 

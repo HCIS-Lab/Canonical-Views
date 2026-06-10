@@ -35,7 +35,10 @@ SUMMARIES=(
     # Add more lines as needed.
 )
 
-STYLE="${STYLE:-heatmap}"            # line | heatmap | both  (default heatmap: easier to read with many experiments)
+STYLE="${STYLE:-heatmap}"            # line | heatmap | sorted_bars | rank_stacked | both | all
+                                     #   sorted_bars: grouped bars per epoch sorted left→right by value
+                                     #                (real y-axis; rank flips show as colour reshuffles)
+                                     #   rank_stacked: same idea but stacked (y-axis is a sum)
 BIN_EPOCHS="${BIN_EPOCHS:-0}"
 SMOOTH="${SMOOTH:-1}"
 TITLE_SUFFIX="${TITLE_SUFFIX:-}"

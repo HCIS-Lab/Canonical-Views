@@ -59,7 +59,13 @@ def parse_args():
                         "Empty string disables the set-level plot.")
     p.add_argument("--output_dir", required=True)
     p.add_argument("--title_suffix", default="")
-    p.add_argument("--style", default="line", choices=["line", "heatmap", "both"])
+    p.add_argument("--style", default="line",
+                   choices=["line", "heatmap", "rank_stacked", "sorted_bars",
+                            "both", "all"],
+                   help="line | heatmap | sorted_bars (grouped bars per epoch "
+                        "sorted left-to-right by value, real y-axis) | "
+                        "rank_stacked (vertically stacked; y-axis is a sum) | "
+                        "both | all.")
     p.add_argument("--bin_epochs", type=int, default=0,
                    help="Heatmap only: bin into N columns (0 = no binning).")
     p.add_argument("--smooth", type=int, default=1,
@@ -69,13 +75,17 @@ def parse_args():
 
 def parse_summary_spec(spec):
     """Parse PATH or PATH:LABEL. PATH may be a directory containing
-    overall_summary.csv, or a direct path to the CSV. Returns (csv_path, label)."""
-    if ":" in spec and not spec.startswith("/"):
-        path, _, label = spec.rpartition(":")
-        if "/" in label:
-            path, label = spec, None
-    else:
-        path, label = spec, None
+    overall_summary.csv, or a direct path to the CSV. Returns (csv_path, label).
+
+    Treats the suffix after the LAST ':' as a label iff it doesn't contain a
+    path separator. This way absolute paths like '/abs/path:label' parse
+    correctly.
+    """
+    path, label = spec, None
+    if ":" in spec:
+        prefix, _, suffix = spec.rpartition(":")
+        if prefix and suffix and "/" not in suffix:
+            path, label = prefix, suffix
 
     if os.path.isdir(path):
         csv_path = os.path.join(path, "overall_summary.csv")
@@ -140,6 +150,147 @@ def plot_line(combined, value_col, metric_name, title_word, out_path, args):
     ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_sorted_bars(combined, value_col, metric_name, title_word, out_path, args):
+    """Grouped bars per epoch, sorted left-to-right by value (descending).
+
+    Real y-axis (no spurious sum). Same experiment = same colour everywhere;
+    a colour changing horizontal position between epoch groups = a rank flip.
+    """
+    rows_of_values, exp_labels, all_epochs = [], [], None
+    for exp_label, df_exp in combined.groupby("experiment"):
+        sub = df_exp[df_exp["metric"] == metric_name].sort_values("epoch_mid")
+        if sub.empty:
+            continue
+        epochs_i = sub["epoch_mid"].to_numpy()
+        vals_i = sub[value_col].astype(float).to_numpy()
+        epochs_i, vals_i = _bin_matrix(epochs_i, vals_i, args.bin_epochs)
+        if all_epochs is None:
+            all_epochs = epochs_i
+        elif not np.array_equal(all_epochs, epochs_i):
+            all_epochs = np.union1d(all_epochs, epochs_i)
+        exp_labels.append(exp_label)
+        rows_of_values.append((epochs_i, vals_i))
+    if not exp_labels:
+        return
+
+    matrix = np.full((len(exp_labels), len(all_epochs)), np.nan)
+    for i, (epochs_i, vals_i) in enumerate(rows_of_values):
+        idx = np.searchsorted(all_epochs, epochs_i)
+        matrix[i, idx] = vals_i
+
+    n_exp, n_T = matrix.shape
+    cmap_base = plt.cm.tab10 if n_exp <= 10 else plt.cm.tab20
+    color_for = {lbl: cmap_base(i % cmap_base.N) for i, lbl in enumerate(exp_labels)}
+
+    group_width = 0.85
+    bar_width = group_width / max(n_exp, 1)
+    fig_w = max(8.0, 0.18 * n_T * n_exp + 2.0)
+    fig, ax = plt.subplots(figsize=(fig_w, max(4.5, 0.3 * n_exp + 3.0)))
+
+    for j in range(n_T):
+        col = matrix[:, j]
+        order = np.argsort(-np.where(np.isnan(col), -np.inf, col))
+        valid = [i for i in order if not np.isnan(col[i])]
+        n_valid = len(valid)
+        for pos_in_group, i in enumerate(valid):
+            x = j + (pos_in_group - (n_valid - 1) / 2.0) * bar_width
+            ax.bar(x, col[i], width=bar_width * 0.9,
+                   color=color_for[exp_labels[i]],
+                   edgecolor="white", linewidth=0.3)
+
+    n_xticks = min(n_T, 10)
+    tick_idx = np.linspace(0, n_T - 1, n_xticks).astype(int)
+    ax.set_xticks(tick_idx)
+    ax.set_xticklabels([f"{int(all_epochs[i])}" for i in tick_idx], fontsize=8)
+    ax.set_xlabel("Training epoch midpoint")
+    ax.set_ylabel(value_col)
+    ax.axhline(0, color="gray", ls="--", alpha=0.5)
+    legend_handles = [plt.Rectangle((0, 0), 1, 1, color=color_for[lbl]) for lbl in exp_labels]
+    ax.legend(legend_handles, exp_labels, loc="upper left",
+              bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False,
+              title="experiment\n(within each epoch:\nleft = highest)")
+    title = f"{args.model.upper()} {title_word} confidence ({value_col})"
+    if args.title_suffix:
+        title += f"\n{args.title_suffix}"
+    title += "\n(sorted-bars: within each epoch, bars left→right by descending value)"
+    ax.set_title(title)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_rank_stacked(combined, value_col, metric_name, title_word, out_path, args):
+    """Stacked bars sorted by value at each epoch (segment colour = experiment,
+    segment order = rank). Same idea as the temporal-test rank_stacked plot."""
+    rows_of_values, exp_labels, all_epochs = [], [], None
+    for exp_label, df_exp in combined.groupby("experiment"):
+        sub = df_exp[df_exp["metric"] == metric_name].sort_values("epoch_mid")
+        if sub.empty:
+            continue
+        epochs_i = sub["epoch_mid"].to_numpy()
+        vals_i = sub[value_col].astype(float).to_numpy()
+        epochs_i, vals_i = _bin_matrix(epochs_i, vals_i, args.bin_epochs)
+        if all_epochs is None:
+            all_epochs = epochs_i
+        elif not np.array_equal(all_epochs, epochs_i):
+            all_epochs = np.union1d(all_epochs, epochs_i)
+        exp_labels.append(exp_label)
+        rows_of_values.append((epochs_i, vals_i))
+    if not exp_labels:
+        return
+
+    matrix = np.full((len(exp_labels), len(all_epochs)), np.nan)
+    for i, (epochs_i, vals_i) in enumerate(rows_of_values):
+        idx = np.searchsorted(all_epochs, epochs_i)
+        matrix[i, idx] = vals_i
+
+    n_exp, n_T = matrix.shape
+    cmap_base = plt.cm.tab10 if n_exp <= 10 else plt.cm.tab20
+    color_for = {lbl: cmap_base(i % cmap_base.N) for i, lbl in enumerate(exp_labels)}
+
+    fig, ax = plt.subplots(figsize=(max(8, 0.4 * n_T + 2),
+                                    max(4.5, 0.3 * n_exp + 3)))
+    for j in range(n_T):
+        col = matrix[:, j]
+        order = np.argsort(-np.where(np.isnan(col), -np.inf, col))
+        bottom_pos = 0.0
+        bottom_neg = 0.0
+        for i in order:
+            v = col[i]
+            if np.isnan(v):
+                continue
+            lbl = exp_labels[i]
+            if v >= 0:
+                ax.bar(j, v, bottom=bottom_pos, width=0.85,
+                       color=color_for[lbl], edgecolor="white", linewidth=0.4)
+                bottom_pos += v
+            else:
+                ax.bar(j, v, bottom=bottom_neg, width=0.85,
+                       color=color_for[lbl], edgecolor="white", linewidth=0.4)
+                bottom_neg += v
+
+    n_xticks = min(n_T, 10)
+    tick_idx = np.linspace(0, n_T - 1, n_xticks).astype(int)
+    ax.set_xticks(tick_idx)
+    ax.set_xticklabels([f"{int(all_epochs[i])}" for i in tick_idx], fontsize=8)
+    ax.set_xlabel("Training epoch midpoint")
+    ax.set_ylabel(f"Stacked {value_col} — sum across experiments")
+    legend_handles = [plt.Rectangle((0, 0), 1, 1, color=color_for[lbl]) for lbl in exp_labels]
+    ax.legend(legend_handles, exp_labels, loc="upper left",
+              bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False,
+              title="experiment (segment colour fixed; order = rank)")
+    title = f"{args.model.upper()} {title_word} confidence ({value_col})"
+    if args.title_suffix:
+        title += f"\n{args.title_suffix}"
+    title += "\n(rank-stacked: segment order = sorted by value at each epoch)"
+    ax.set_title(title)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -242,8 +393,10 @@ def main():
           f"({combined['experiment'].nunique()} experiments × "
           f"{combined['metric'].nunique()} metrics)")
 
-    do_line = args.style in ("line", "both")
-    do_heatmap = args.style in ("heatmap", "both")
+    do_line = args.style in ("line", "both", "all")
+    do_heatmap = args.style in ("heatmap", "both", "all")
+    do_rank_stacked = args.style in ("rank_stacked", "all")
+    do_sorted_bars = args.style in ("sorted_bars", "all")
 
     # Pair-level
     if args.pair_metric_name:
@@ -257,6 +410,16 @@ def main():
                                f"{args.model}_pair_{args.value}_heatmap.png")
             plot_heatmap(combined, value_col, args.pair_metric_name, "pair-level", out, args)
             print(f"Saved: {out}")
+        if do_rank_stacked:
+            out = os.path.join(args.output_dir,
+                               f"{args.model}_pair_{args.value}_rank_stacked.png")
+            plot_rank_stacked(combined, value_col, args.pair_metric_name, "pair-level", out, args)
+            print(f"Saved: {out}")
+        if do_sorted_bars:
+            out = os.path.join(args.output_dir,
+                               f"{args.model}_pair_{args.value}_sorted_bars.png")
+            plot_sorted_bars(combined, value_col, args.pair_metric_name, "pair-level", out, args)
+            print(f"Saved: {out}")
 
     # Set-level (skip if disabled or absent)
     if args.set_metric_name and (combined["metric"] == args.set_metric_name).any():
@@ -269,6 +432,16 @@ def main():
             out = os.path.join(args.output_dir,
                                f"{args.model}_set_{args.value}_heatmap.png")
             plot_heatmap(combined, value_col, args.set_metric_name, "set-level", out, args)
+            print(f"Saved: {out}")
+        if do_rank_stacked:
+            out = os.path.join(args.output_dir,
+                               f"{args.model}_set_{args.value}_rank_stacked.png")
+            plot_rank_stacked(combined, value_col, args.set_metric_name, "set-level", out, args)
+            print(f"Saved: {out}")
+        if do_sorted_bars:
+            out = os.path.join(args.output_dir,
+                               f"{args.model}_set_{args.value}_sorted_bars.png")
+            plot_sorted_bars(combined, value_col, args.set_metric_name, "set-level", out, args)
             print(f"Saved: {out}")
     elif args.set_metric_name:
         print(f"Note: no {args.set_metric_name} rows present (model probably "

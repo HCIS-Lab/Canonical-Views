@@ -375,11 +375,18 @@ Useful flags:
 - `--value {agent_mean | delta_mean | macro_agent | macro_delta | ...}` —
   default `agent_mean` plots VGGT's confidence on the agent's selections;
   `delta_mean` plots agent-minus-random advantage.
-- `--style {line,heatmap,both}` — heatmap makes many-experiment comparisons
-  much more readable. **The bash wrapper defaults to `STYLE=heatmap`**;
-  pass `STYLE=line` to fall back to line plots, or `STYLE=both` for both.
-  Heatmap output uses a `_heatmap.png` suffix so the two styles don't
-  overwrite each other.
+- `--style {line,heatmap,sorted_bars,rank_stacked,both,all}` — `heatmap`
+  makes many-experiment comparisons much more readable. **The bash wrapper
+  defaults to `STYLE=heatmap`**; pass `STYLE=line` to fall back to line plots,
+  or `STYLE=all` for every style.
+  - `sorted_bars` is the **recommended rank-aware option**: grouped bars per
+    epoch sorted left→right by value, with the y-axis showing the actual
+    value (not a sum). Rank flips show up as a colour changing its horizontal
+    position within an epoch group.
+  - `rank_stacked` is the same idea but stacked vertically — more compact but
+    the y-axis becomes a sum of values, less directly meaningful.
+  - Each style writes its own filename suffix (`_heatmap.png`,
+    `_sorted_bars.png`, `_rank_stacked.png`) so they never overwrite each other.
 - `--bin_epochs N` — heatmap epoch axis collapsed to N bins.
 - `--smooth N` — line-plot rolling mean window.
 - `--title_suffix "..."` — extra title line.
