@@ -68,6 +68,54 @@ def aggregate_feat(feat, selection, aggregation='mean'):
 class ClassifierTrainer(BaseTrainer):
     def __init__(self, model, logdir, args, ):
         super(ClassifierTrainer, self).__init__(model, logdir, args, )
+        self._selector_limit_warned = False
+
+    def selector_keep_cams(self, keep_cams, meta):
+        """Apply optional view-family restriction only to MVSelect actions.
+
+        The initial view is not restricted here; this mask is used as the
+        candidate pool for additional selector actions. Baselines such as
+        random_select_test and restricted_view_test intentionally do not call
+        this helper.
+        """
+        limit = getattr(self.args, "selector_view_limit", "all")
+        if limit == "all":
+            return keep_cams
+
+        device = keep_cams.device if torch.is_tensor(keep_cams) else "cuda"
+        keep = keep_cams.to(device).bool()
+        is_expanded = meta['long_list'].to(device).bool()
+        is_expanded_like = meta['long_like_list'].to(device).bool()
+        is_foreshortened = meta['short_list'].to(device).bool()
+        is_foreshortened_like = meta['short_like_list'].to(device).bool()
+
+        if limit == "expanded_family":
+            allowed = is_expanded | is_expanded_like
+        elif limit == "foreshortened_family":
+            allowed = is_foreshortened | is_foreshortened_like
+        elif limit == "remainder":
+            allowed = ~(is_expanded | is_expanded_like |
+                        is_foreshortened | is_foreshortened_like)
+        else:
+            raise ValueError(f"Unknown selector_view_limit: {limit}")
+
+        limited = keep & allowed
+        empty = ~limited.any(dim=1)
+        if empty.any():
+            # If dropcam removed every view from the requested family, re-enable
+            # that family so the selector still obeys the family restriction.
+            # Only fall back to the original keep_cams when the dataset truly
+            # has no view from the requested family for an instance.
+            allowed_empty = empty & ~allowed.any(dim=1)
+            limited[empty & ~allowed_empty] = allowed[empty & ~allowed_empty]
+            limited[allowed_empty] = keep[allowed_empty]
+            if not self._selector_limit_warned:
+                print(f"WARNING: selector_view_limit={limit} had no valid "
+                      f"candidate after keep_cams filtering for at least one "
+                      f"instance; re-enabled that family when present, and "
+                      f"fell back to original keep_cams only when absent.")
+                self._selector_limit_warned = True
+        return limited
 
     def task_loss_reward(self, init_feature, init_prob, overall_feat, tgt, step):
         if step ==0:
@@ -139,8 +187,9 @@ class ClassifierTrainer(BaseTrainer):
             feat, _ = self.model.get_feat(imgs, None, self.args.down)
             if self.args.steps:
                 eps_thres = get_eps_thres(epoch - 1 + batch_idx / len(dataloader), self.args.epochs)
+                selector_keep_cams = self.selector_keep_cams(keep_cams, meta)
                 loss, (action_sum, return_avg, value_loss) = \
-                    self.expand_episode(feat, keep_cams, tgt, eps_thres, (action_sum, return_avg), all_cameras=all_cameras)
+                    self.expand_episode(feat, selector_keep_cams, tgt, eps_thres, (action_sum, return_avg), all_cameras=all_cameras)
             else:
                 overall_feat = aggregate_feat(feat, keep_cams, self.model.aggregation)
                 output = self.model.get_output(overall_feat)
@@ -205,11 +254,16 @@ class ClassifierTrainer(BaseTrainer):
         view_type_save = []
         view_index_save = []
         view_class_save = []
+        selected_feature_save = []
+        selected_class_save = []
+        selected_init_cam_save = []
+        selected_mask_save = []
 
         for batch_idx, (imgs, tgt, keep_cams, meta) in enumerate(dataloader):
             B, N = imgs.shape[:2]
             imgs, tgt = imgs.cuda(), tgt.cuda()
             outputs, actions = [], []
+            feat = None
 
             # print('--------------------')
             # print(elf.args.steps)
@@ -218,7 +272,13 @@ class ClassifierTrainer(BaseTrainer):
             with torch.no_grad():
 
                 if self.args.steps == 0 or init_cam is None:
-                    output, _, (_, _, action, _) = self.model(imgs, None, self.args.down)
+                    if feature_file_name and (epoch%10==0 or epoch < 20):
+                        feat, _ = self.model.get_feat(imgs, None, self.args.down)
+                        overall_feat = aggregate_feat(feat, keep_cams, self.model.aggregation)
+                        output = self.model.get_output(overall_feat)
+                        action = None
+                    else:
+                        output, _, (_, _, action, _) = self.model(imgs, None, self.args.down)
                     # print('---------')
                     # print(output)
                     # print('---------')
@@ -228,13 +288,23 @@ class ClassifierTrainer(BaseTrainer):
                 else:
 
                     feat, _ = self.model.get_feat(imgs, None, self.args.down)
+                    selector_keep_cams = self.selector_keep_cams(keep_cams, meta)
                     # K, B, N
                     for k in range(K):
                         overall_feat, (_, _, action, _) = \
-                            self.model.do_steps(feat, init_cam[k].repeat([B, 1]), self.args.steps, keep_cams)
+                            self.model.do_steps(feat, init_cam[k].repeat([B, 1]), self.args.steps, selector_keep_cams)
                         output = self.model.get_output(overall_feat)
                         outputs.append(output)
                         actions.append(action)
+                        if feature_file_name and (epoch%10==0 or epoch < 20):
+                            selected_mask = init_cam[k].repeat([B, 1]).to(feat.device).bool()
+                            for step_action in action:
+                                selected_mask = selected_mask | step_action.bool()
+                            for b in range(B):
+                                selected_feature_save.append(overall_feat[b].detach().cpu().numpy())
+                                selected_class_save.append(np.array([tgt[b].item()]))
+                                selected_init_cam_save.append(np.array([k]))
+                                selected_mask_save.append(selected_mask[b].detach().cpu().numpy())
                         # print(K) 20
                         # print(N) 20
                         # print(B) 8
@@ -303,7 +373,7 @@ class ClassifierTrainer(BaseTrainer):
                                 else:
                                     out_meta['inplane_deg_bar'][int(meta['inplane_deg'][b][idx]//10)] +=1
 
-            if feature_file_name and (epoch%10==0 or epoch < 20):
+            if feature_file_name and (epoch%10==0 or epoch < 20) and feat is not None:
                 for view_idx in range(N):
                     for b in range(B):
                         feature_save.append(feat[b, view_idx].cpu().numpy())
@@ -355,13 +425,20 @@ class ClassifierTrainer(BaseTrainer):
             view_index_save = np.concatenate(view_index_save, axis=0)
             view_type_save = np.concatenate(view_type_save, axis=0)
             view_class_save = np.concatenate(view_class_save, axis=0)
-            np.savez(
-                feature_file_name,
+            save_kwargs = dict(
                 features=feature_save,
                 view_index=view_index_save,
                 view_type=view_type_save,
-                view_class=view_class_save
+                view_class=view_class_save,
             )
+            if selected_feature_save:
+                save_kwargs.update(
+                    selected_features=np.concatenate(selected_feature_save, axis=0),
+                    selected_class=np.concatenate(selected_class_save, axis=0),
+                    selected_init_cam=np.concatenate(selected_init_cam_save, axis=0),
+                    selected_mask=np.stack(selected_mask_save, axis=0),
+                )
+            np.savez(feature_file_name, **save_kwargs)
 
         for k in range(K):
             if init_cam is not None:

@@ -18,6 +18,11 @@ def setup_args(feat, init_prob, keep_cams=None):
         keep_cams = torch.ones([B, N], dtype=torch.bool)
     keep_cams = keep_cams.to(feat.device)
     cam_candidate = ~init_prob & keep_cams
+    empty = ~cam_candidate.any(dim=1)
+    if empty.any():
+        # If the restricted candidate pool has already been exhausted, allow a
+        # repeat within the valid pool instead of leaking to a disallowed view.
+        cam_candidate[empty] = keep_cams[empty]
     return init_prob, keep_cams, cam_candidate
 
 
@@ -115,11 +120,10 @@ class CamSelect(nn.Module):
         # DQN
         action_value = self.value_head(cam_emb + cam_feat)
         if random.random() > eps_thres:
-            action = torch.argmax(action_value + (cam_candidate.float() - 1) * 1e3, dim=-1)
+            action = torch.argmax(action_value.masked_fill(~cam_candidate, -1e9), dim=-1)
         else:
-            # m = Categorical(F.normalize(cam_candidate.float(), p=1, dim=1))
-            # action = m.sample()
-            action = torch.randint(N, [B], device=feat.device)
+            action_prob = F.normalize(cam_candidate.float(), p=1, dim=1)
+            action = Categorical(action_prob).sample()
 
         action = F.one_hot(action, num_classes=N).bool()
         overall_feat = aggregate_feat(feat, init_prob + action, self.aggregation)

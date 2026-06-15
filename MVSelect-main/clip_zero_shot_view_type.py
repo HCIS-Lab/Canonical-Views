@@ -297,9 +297,15 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     print(f"Output: {output_dir}")
 
-    # CLIP
+    # CLIP. use_safetensors=True avoids the pytorch_model.bin path that
+    # newer transformers refuses to load on torch <2.6 (CVE-2025-32434).
     print(f"Loading CLIP: {args.clip_model}")
-    clip_model = CLIPModel.from_pretrained(args.clip_model).to(device).eval()
+    try:
+        clip_model = CLIPModel.from_pretrained(args.clip_model, use_safetensors=True).to(device).eval()
+    except (TypeError, ValueError, OSError) as e:
+        # Older transformers don't accept use_safetensors=True. Fall back.
+        print(f"  safetensors path failed ({e}); falling back to default load.")
+        clip_model = CLIPModel.from_pretrained(args.clip_model).to(device).eval()
     clip_processor = CLIPProcessor.from_pretrained(args.clip_model)
     ensemble = not args.no_prompt_ensemble
     print(f"Computing text embeddings (prompt_ensemble={ensemble})...")

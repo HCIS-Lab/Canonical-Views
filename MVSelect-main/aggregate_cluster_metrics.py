@@ -14,14 +14,16 @@ single figure per metric, in the same plot styles as
 
 Default plotted metric is `separability` (silhouette_class − silhouette_view);
 override with `--metrics` (one or more of silhouette_class, silhouette_view,
-separability).
+silhouette_view_index, separability, silhouette_class_selected,
+silhouette_class_selected_with_init, silhouette_class_all_views_mean,
+silhouette_class_all_views_max).
 
 Usage:
     python3 aggregate_cluster_metrics.py \\
         --exp meta_logs/rgb/resnet18steps5_train_ins25_..._e100:no_freeze \\
         --exp meta_logs/rgb/freeze_10_resnet18steps5_..._e100:freeze_10 \\
         --output_dir compare/cluster_metrics_freeze_sweep \\
-        --metrics separability silhouette_class silhouette_view \\
+        --metrics separability silhouette_class_selected silhouette_class silhouette_view silhouette_view_index \\
         --style heatmap
 """
 
@@ -34,7 +36,16 @@ import numpy as np
 import pandas as pd
 
 
-VALID_METRICS = ["silhouette_class", "silhouette_view", "separability"]
+VALID_METRICS = [
+    "silhouette_class",
+    "silhouette_view",
+    "silhouette_view_index",
+    "separability",
+    "silhouette_class_selected",
+    "silhouette_class_selected_with_init",
+    "silhouette_class_all_views_mean",
+    "silhouette_class_all_views_max",
+]
 
 
 def parse_args():
@@ -196,6 +207,17 @@ def plot_heatmap(df, metric, out_path, args):
     ax.set_title(title)
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label(metric)
+    # Make the true min/max explicit on the colorbar so yellow/red aren't
+    # mistaken for "exactly the last labeled tick" (matplotlib's default
+    # ticks land on round numbers and can hide the real endpoints).
+    if metric == "separability":
+        ticks = sorted({vmin, 0.0, vmax})
+    else:
+        ticks = [vmin, vmax]
+        if vmin < 0 < vmax:
+            ticks = sorted({vmin, 0.0, vmax})
+    cbar.set_ticks(ticks)
+    cbar.set_ticklabels([f"{t:+.3f}" if t != 0 else "0" for t in ticks])
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)

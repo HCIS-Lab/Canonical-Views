@@ -116,6 +116,51 @@ Practical notes:
   still loads weights from `logs/<dataset>/<run>/model.pth` and overrides
   `--skip_stage1`.
 
+### Restrict selector candidates by view family
+
+Stage-2 MVSelect can be forced to choose additional views only from one view
+family using `--selector_view_limit`. This restriction applies only when the
+selector is making an action during training/testing. The initial view is not
+restricted, and the random/all-view/restricted-view baseline tests still use
+their own candidate pools.
+
+Choices:
+
+| option | selector can choose |
+|---|---|
+| `all` | any currently available view (default) |
+| `expanded_family` | Expanded + Expanded-like |
+| `foreshortened_family` | Foreshortened + Foreshortened-like |
+| `remainder` | views outside the two families |
+
+```bash
+# Expanded-family-only selector
+python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
+  --dataset rgb --save_feature --selector_view_limit expanded_family
+
+# Foreshortened-family-only selector
+python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
+  --dataset rgb --save_feature --selector_view_limit foreshortened_family
+
+# Remainder-only selector
+python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
+  --dataset rgb --save_feature --selector_view_limit remainder
+```
+
+Non-default limits are encoded in saved paths so they do not collide with
+unrestricted runs:
+
+```text
+logs/rgb/resnet18steps5_selview_expanded_family_train_ins25_..._<timestamp>/
+meta_logs/rgb/resnet18steps5_selview_expanded_family_train_ins25_..._e100/
+```
+
+If the restricted family is exhausted before all selector steps are consumed,
+the selector repeats within the allowed pool rather than leaking to another
+view family. If a custom dataset has no candidate from the requested family for
+an instance, the trainer prints a warning and falls back to the original
+`keep_cams` for that instance.
+
 ### Aggregated meta-log visualizations
 
 `aggregate_meta_json.py` walks `meta_logs/<rep>/<exp>/*_meta.json`, averages
@@ -187,17 +232,53 @@ scores on the same per-epoch feature dumps and overlay them across the
 freeze sweep (or any experiment list) in the standard plot styles
 (`line`, `heatmap`, `sorted_bars`, `rank_stacked`).
 
-Three metrics per epoch:
+Eight metrics per epoch:
 
 | metric | meaning | desired direction over training |
 |---|---|---|
-| `silhouette_class` | how cleanly features cluster by 32-class label (cosine dist, L2-normalized) | **up** — model learning class identity |
+| `silhouette_class` | how cleanly **individual per-view backbone features** cluster by 32-class label (cosine dist, L2-normalized) | **up** — single views becoming class-discriminative |
+| `silhouette_class_selected` | class silhouette after pooling the agent-selected filenames from `*_selection.json`; selected-only, matching `temporal_selection_test.py` | **up** — selected multi-view representation becoming class-discriminative |
+| `silhouette_class_selected_with_init` | class silhouette over the exact classifier input feature: initial view + agent-selected views; requires newer feature dumps with `selected_features` | **up** — classifier-input representation becoming class-discriminative |
+| `silhouette_class_all_views_mean` | class silhouette after reconstructing each object instance and mean-aggregating all candidate views | **up** — all-view object representation becoming class-discriminative |
+| `silhouette_class_all_views_max` | class silhouette after reconstructing each object instance and max-aggregating all candidate views; matches stage-1/all-view MVCNN pooling | **up** — best comparison to all-view MVCNN performance |
 | `silhouette_view` | how cleanly features cluster by 5-bucket view-type label | **down** — features becoming view-invariant |
+| `silhouette_view_index` | how cleanly features cluster by exact view index/camera pose, e.g. 0-113 in the 114-view setting | **down** — features becoming pose-index-invariant |
 | `separability` | `silhouette_class − silhouette_view` | **up** — class-aware AND view-invariant |
 
-All three are bounded in [-1, 1] (silhouette range). `separability` is the
-single scalar that captures the "class identity + view invariance"
-trajectory in one number.
+All silhouette scores are bounded in [-1, 1]. `separability` is a per-view
+single scalar that captures the "class identity + view invariance" trajectory
+in one number.
+
+Important interpretation note: `feature_<E>.npz` stores **one feature vector per
+view**, because it is the same source used by `pca_tsne.py`. Therefore
+`silhouette_class` can look numerically small even when the final classifier
+has high accuracy: MVCNN classifies after aggregating multiple selected views,
+not from each single-view feature alone. If you want the selected-view cluster
+metric for stage-2 selector performance, inspect `silhouette_class_selected`.
+
+For stage-2 selector experiments, note the distinction:
+
+- `silhouette_class_selected` is reconstructed from existing per-view features
+  plus `*_selection.json`. It follows the same convention as
+  `temporal_selection_test.py`: group selected filenames by `(class, instance)`,
+  dedupe them, pool those selected views, and **do not add the initial view**
+  because `selection.json` does not store it.
+- `silhouette_class_selected_with_init` requires newer feature dumps because it
+  uses the exact `overall_feat` passed into the classifier during test, which
+  includes the initial view plus agent-selected views.
+
+New feature dumps also save:
+
+- `selected_features` — the exact `overall_feat` passed into the classifier
+  for each test-set `(instance, initial camera)` trial.
+- `selected_class` — class label for each selected pooled feature.
+- `selected_init_cam` — the initial camera index for that trial.
+- `selected_mask` — boolean mask of the initial + agent-selected views.
+
+If you compute cluster metrics on old feature files, `silhouette_class_selected`
+can still be computed from `selection.json`, but
+`silhouette_class_selected_with_init` will be empty/NaN until you rerun
+testing/training with `--save_feature` to generate the selected-feature arrays.
 
 Two-step pipeline:
 
@@ -211,7 +292,7 @@ python3 compute_cluster_metrics.py --rep_list rgb
 # Step 2: overlay the EXPS list (edit array at the top of the wrapper)
 ./run_cluster_metrics_pipeline.sh           # default heatmap
 STYLE=sorted_bars ./run_cluster_metrics_pipeline.sh
-METRICS="separability" STYLE=line BIN_EPOCHS=20 ./run_cluster_metrics_pipeline.sh
+METRICS="separability silhouette_class_selected silhouette_view_index" STYLE=line BIN_EPOCHS=20 ./run_cluster_metrics_pipeline.sh
 OVERWRITE=1 ./run_cluster_metrics_pipeline.sh   # force recompute step 1
 ```
 
@@ -234,6 +315,16 @@ Practical notes:
 - **Aggregate across runs**: when multiple training runs exist under one
   experiment folder, step 1 averages their per-epoch silhouette scores into
   a single row.
+- **Per-view vs selected pooled vs all-view pooled**: `silhouette_class`,
+  `silhouette_view`, and `silhouette_view_index` are computed on the saved
+  per-view backbone features. `silhouette_view` uses the 5 semantic view-type
+  buckets; `silhouette_view_index` uses the raw camera index labels
+  (`0..113` for your non-roll setup).
+  `silhouette_class_selected` is computed by cross-checking `*_selection.json`
+  against the saved per-view features. The two `silhouette_class_all_views_*`
+  metrics reconstruct all candidate views belonging to the same object instance
+  from the saved feature order, then aggregate them before computing class
+  silhouette.
 
 **Epoch-density filter (`--every_n_epochs N` / `EVERY_N_EPOCHS=N`).** The
 **feature dumps** (`feature_<E>.npz` files used by silhouette / t-SNE) were
@@ -258,10 +349,16 @@ and `aggregate_vggt_confidence.py` already see a regular epoch grid by
 construction and need no filter.
 
 What to look for in the freeze sweep:
-- `silhouette_class` rising more sharply / earlier under `freeze_30/40/50`
-  → those settings build class identity faster.
+- `silhouette_class_selected` rising more sharply / earlier under
+  `freeze_30/40/50` → those settings build an aggregated class representation
+  from selected views faster.
+- `silhouette_class` rising while remaining much lower than
+  `silhouette_class_selected` → individual views are not as class-separated
+  as the pooled multi-view object representation, which is expected.
 - `silhouette_view` dropping faster under any setting → that setting
   produces more view-invariant representations.
+- `silhouette_view_index` dropping faster → exact camera-pose identity is being
+  suppressed more strongly than in other settings.
 - `separability` curves' eventual height + crossover patterns answer "which
   setting buys the most class-aware, view-invariant representation per
   epoch?" in one chart.

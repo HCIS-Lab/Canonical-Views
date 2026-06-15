@@ -123,6 +123,11 @@ def main(args):
 
     # logging
     select_settings = f'steps{args.steps}_'
+    selector_view_settings = (
+        f'selview_{args.selector_view_limit}_'
+        if args.steps and args.selector_view_limit != 'all'
+        else ''
+    )
     lr_settings = f'base{args.base_lr_ratio}other{args.other_lr_ratio}' + \
                   f'select_wd{args.select_wd}' + \
                   f'select{args.select_lr}' if args.steps else ''
@@ -138,6 +143,7 @@ def main(args):
         logdir = logdir + 'freeze_' + str(args.freeze_epoch) + '_'
     logdir = logdir + args.arch +\
              f'{select_settings if args.steps else ""}' \
+             f'{selector_view_settings}' \
              f'train_ins{args.num_train_instances}_lr{args.lr}{lr_settings}_e{args.epochs}_' \
              f'{time:%Y-%m-%d_%H-%M-%S}' if not args.eval \
         else f'logs/{args.dataset}/EVAL_{args.resume}'
@@ -156,6 +162,7 @@ def main(args):
         if args.freeze_epoch != 100:
             meta_log = meta_log  + 'freeze_' + str(args.freeze_epoch) + '_'
         meta_log = meta_log + args.arch +f'{select_settings if args.steps else ""}' \
+                 f'{selector_view_settings}' \
                  f'train_ins{args.num_train_instances}_lr{args.lr}{lr_settings}_e{args.epochs}' 
         os.makedirs(meta_log, exist_ok=True)
 
@@ -424,6 +431,7 @@ def main(args):
             # random_test_prec_s = [tensor.item() for tensor in random_test_prec_s]
 
             meta_file = {'overfit': overfit,
+                        'selector_view_limit': args.selector_view_limit,
                         'accuracy': test_prec_s,
                         'per_class_acc': per_class_acc_list,
                         'expanded': longest_ratio_hist,
@@ -595,6 +603,15 @@ if __name__ == '__main__':
     # MVSelect settings
     parser.add_argument('--steps', type=int, default=0,
                         help='number of camera views to choose. if 0, then no selection')
+    parser.add_argument('--selector_view_limit', type=str, default='all',
+                        choices=['all', 'expanded_family',
+                                 'foreshortened_family', 'remainder'],
+                        help='Stage-2 only (--steps >0): restrict MVSelect action '
+                             'candidates to a view family. The initial view is not '
+                             'restricted, and random/restricted/all-view test baselines '
+                             'are unaffected. Choices: all, expanded_family '
+                             '(expanded + expanded-like), foreshortened_family '
+                             '(foreshortened + foreshortened-like), remainder.')
     parser.add_argument('--train_num_views', type=int, default=None,
                         help='Stage-1 only (--steps 0): if set to K, each training batch '
                              'is restricted to K random views per instance, re-sampled '

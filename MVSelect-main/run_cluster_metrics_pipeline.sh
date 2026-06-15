@@ -38,9 +38,15 @@ EVERY_N_EPOCHS="${EVERY_N_EPOCHS:-10}"  # only use epochs where epoch %% N == 0
                                         #   default 10 = matches the "I dumped every
                                         #   epoch before 20 then every 10 afterwards"
                                         #   cadence; set to 1 (or 0) to disable.
+AGGREGATION="${AGGREGATION:-max}"     # selected-view feature pooling from selection.json
+DATA_ROOT="${DATA_ROOT:-}"            # empty = compute_cluster_metrics.py uses main.py defaults
+SPLIT="${SPLIT:-test}"
+TEST_PER_CLS_INSTANCES="${TEST_PER_CLS_INSTANCES:-5}"
+NON_ROLL="${NON_ROLL:-1}"             # default matches your 114-view experiments
+NON_LIKE="${NON_LIKE:-0}"
 
 # Aggregate-step knobs
-METRICS="${METRICS:-separability silhouette_class silhouette_view}"
+METRICS="${METRICS:-separability silhouette_class_selected silhouette_class silhouette_view silhouette_view_index}"
 STYLE="${STYLE:-heatmap}"            # line | heatmap | sorted_bars | rank_stacked | both | all
 BIN_EPOCHS="${BIN_EPOCHS:-0}"
 SMOOTH="${SMOOTH:-1}"
@@ -59,6 +65,9 @@ echo "  MAX_SAMPLES = ${MAX_SAMPLES}"
 echo "  METRICS     = ${METRICS}"
 echo "  STYLE       = ${STYLE}"
 echo "  EVERY_N_EP  = ${EVERY_N_EPOCHS}"
+echo "  AGGREGATION = ${AGGREGATION}"
+echo "  NON_ROLL    = ${NON_ROLL}"
+echo "  NON_LIKE    = ${NON_LIKE}"
 echo "  OUTPUT      = ${OUTPUT_DIR}"
 echo "  EXPS (${#EXPS[@]}):"
 for e in "${EXPS[@]}"; do echo "    - ${e}"; done
@@ -71,7 +80,13 @@ compute_args=(
     --rep_list "${DATASET}"
     --max_samples "${MAX_SAMPLES}"
     --feature_dim "${FEATURE_DIM}"
+    --aggregation "${AGGREGATION}"
+    --split "${SPLIT}"
+    --test_per_cls_instances "${TEST_PER_CLS_INSTANCES}"
 )
+[ -n "${DATA_ROOT}" ] && compute_args+=(--data_root "${DATA_ROOT}")
+[ "${NON_ROLL}" = "1" ] && compute_args+=(--non_roll)
+[ "${NON_LIKE}" = "1" ] && compute_args+=(--non_like)
 [ -n "${NUM_RUNS}" ] && compute_args+=(--num_runs "${NUM_RUNS}")
 [ "${OVERWRITE}" = "1" ] && compute_args+=(--overwrite)
 [ "${EVERY_N_EPOCHS}" != "0" ] && [ "${EVERY_N_EPOCHS}" != "1" ] && \
