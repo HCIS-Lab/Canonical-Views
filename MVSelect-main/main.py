@@ -605,13 +605,16 @@ if __name__ == '__main__':
                         help='number of camera views to choose. if 0, then no selection')
     parser.add_argument('--selector_view_limit', type=str, default='all',
                         choices=['all', 'expanded_family',
-                                 'foreshortened_family', 'remainder'],
+                                 'foreshortened_family',
+                                 'foreshortened_family_remainder',
+                                 'remainder'],
                         help='Stage-2 only (--steps >0): restrict MVSelect action '
                              'candidates to a view family. The initial view is not '
                              'restricted, and random/restricted/all-view test baselines '
                              'are unaffected. Choices: all, expanded_family '
                              '(expanded + expanded-like), foreshortened_family '
-                             '(foreshortened + foreshortened-like), remainder.')
+                             '(foreshortened + foreshortened-like), '
+                             'foreshortened_family_remainder, remainder.')
     parser.add_argument('--train_num_views', type=int, default=None,
                         help='Stage-1 only (--steps 0): if set to K, each training batch '
                              'is restricted to K random views per instance, re-sampled '
@@ -621,7 +624,7 @@ if __name__ == '__main__':
                              'checkpoint. The backbone remains ImageNet-pretrained '
                              '(MVCNN default); classifier and selector heads start from '
                              'their default init and train jointly with the selector.')
-    parser.add_argument('--save_every_epoch', type=int, default=0,
+    parser.add_argument('--save_every_epoch', type=int, default=1,
                         help='If >0, additionally save model_e<E>.pth every N epochs '
                              '(in addition to model.pth which overwrites every epoch). '
                              '0 = off. 1 = every epoch (heaviest on disk). 5/10 = sampled.'

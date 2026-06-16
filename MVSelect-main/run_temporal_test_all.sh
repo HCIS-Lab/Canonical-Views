@@ -13,6 +13,7 @@
 #   NON_LIKE=0                pass --non_like
 #   NUM_TRAIN_INSTANCES=25
 #   MAX_EPOCHS=               optional smoke-test cap
+#   COMPARISON_SET=all        all | freeze | selector_limit
 #   PER_EPOCH_CHECKPOINT=1    model-at-t protocol (default; needs training to
 #                             have been run with --save_every_epoch >0). Set
 #                             to 0 to use the final classifier instead (the
@@ -21,6 +22,7 @@
 # Examples:
 #   ./run_temporal_test_all.sh                            # model-at-t (default)
 #   GPUS=4 ./run_temporal_test_all.sh                     # 4-GPU round-robin
+#   COMPARISON_SET=selector_limit GPUS=4 ./run_temporal_test_all.sh
 #   PER_EPOCH_CHECKPOINT=0 ./run_temporal_test_all.sh     # fixed final classifier
 #   REP_LIST=rgb MAX_EPOCHS=5 ./run_temporal_test_all.sh  # smoke test
 
@@ -35,6 +37,7 @@ NON_ROLL="${NON_ROLL:-1}"
 NON_LIKE="${NON_LIKE:-0}"
 NUM_TRAIN_INSTANCES="${NUM_TRAIN_INSTANCES:-25}"
 MAX_EPOCHS="${MAX_EPOCHS:-}"
+COMPARISON_SET="${COMPARISON_SET:-all}"  # all | freeze | selector_limit
 PER_EPOCH_CHECKPOINT="${PER_EPOCH_CHECKPOINT:-1}"
 
 # Pass-through flags
@@ -54,6 +57,7 @@ echo "  NON_ROLL  = ${NON_ROLL}"
 echo "  NON_LIKE  = ${NON_LIKE}"
 echo "  NUM_INS   = ${NUM_TRAIN_INSTANCES}"
 echo "  MAX_EPOCH = ${MAX_EPOCHS:-(all)}"
+echo "  SET       = ${COMPARISON_SET}"
 echo "  PROTOCOL  = $([ "${PER_EPOCH_CHECKPOINT}" = "1" ] && echo 'classifier-at-epoch-t (--per_epoch_checkpoint)' || echo 'final classifier (fixed)')"
 echo "=========================================="
 
@@ -82,6 +86,44 @@ parse_arch() {
     fi
 }
 
+should_include_exp() {
+    local name="$1"
+    case "${COMPARISON_SET}" in
+        all)
+            return 0
+            ;;
+        freeze)
+            case "${name}" in
+                resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                freeze_10_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                freeze_20_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                freeze_30_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                freeze_40_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                freeze_50_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100)
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+        selector_limit)
+            case "${name}" in
+                resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                resnet18steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                resnet18steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                resnet18steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
+                resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100)
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+        *)
+            echo "ERROR: unknown COMPARISON_SET=${COMPARISON_SET}. Use all, freeze, or selector_limit."
+            exit 1
+            ;;
+    esac
+}
+
 # Collect work items: (rep, exp_dir, freeze_epoch, arch) tuples
 WORK=()
 for rep in ${REP_LIST}; do
@@ -91,6 +133,10 @@ for rep in ${REP_LIST}; do
     for exp_dir in "${rep_dir}"/*/; do
         [ -d "${exp_dir}" ] || continue
         exp_name=$(basename "${exp_dir}")
+
+        if ! should_include_exp "${exp_name}"; then
+            continue
+        fi
 
         # Skip if no *_selection.json (stage-1 or incomplete stage-2)
         shopt -s nullglob

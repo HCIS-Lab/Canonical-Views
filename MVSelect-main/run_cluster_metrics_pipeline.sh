@@ -15,12 +15,26 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # ---------------------------------------------------------------------------
 # Comparison configuration — edit these
 # ---------------------------------------------------------------------------
-COMPARISON_NAME="${COMPARISON_NAME:-cluster_metrics_freeze_sweep}"
+COMPARISON_SET="${COMPARISON_SET:-freeze}"  # freeze | selector_limit
+if [ -z "${COMPARISON_NAME:-}" ]; then
+    case "${COMPARISON_SET}" in
+        freeze)
+            COMPARISON_NAME="cluster_metrics_freeze_sweep"
+            ;;
+        selector_limit)
+            COMPARISON_NAME="cluster_metrics_selector_limit_sweep"
+            ;;
+        *)
+            echo "ERROR: unknown COMPARISON_SET=${COMPARISON_SET}. Use freeze or selector_limit."
+            exit 1
+            ;;
+    esac
+fi
 DATASET="${DATASET:-rgb}"
 
 # Mirror the layout used by other aggregators: each entry resolves to
 # meta_logs/${DATASET}/<exp_folder>/.
-EXPS=(
+FREEZE_EXPS=(
     "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
     "freeze_10_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_10"
     "freeze_20_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_20"
@@ -28,6 +42,21 @@ EXPS=(
     "freeze_40_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_40"
     "freeze_50_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_50"
 )
+SELECTOR_LIMIT_EXPS=(
+    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_all"
+    "resnet18steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_expanded"
+    "resnet18steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened"
+    "resnet18steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened_remainder"
+    "resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_remainder"
+)
+case "${COMPARISON_SET}" in
+    freeze)
+        EXPS=("${FREEZE_EXPS[@]}")
+        ;;
+    selector_limit)
+        EXPS=("${SELECTOR_LIMIT_EXPS[@]}")
+        ;;
+esac
 
 # Compute-step knobs
 NUM_RUNS="${NUM_RUNS:-}"             # cap on runs aggregated per exp; empty = all
@@ -59,6 +88,7 @@ OUTPUT_DIR="${ROOT_DIR}/compare/${COMPARISON_NAME}"
 mkdir -p "${OUTPUT_DIR}"
 echo "=========================================="
 echo "Cluster-metrics pipeline:"
+echo "  SET         = ${COMPARISON_SET}"
 echo "  COMPARISON  = ${COMPARISON_NAME}"
 echo "  DATASET     = ${DATASET}"
 echo "  MAX_SAMPLES = ${MAX_SAMPLES}"

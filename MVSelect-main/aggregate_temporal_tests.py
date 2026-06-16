@@ -545,7 +545,12 @@ def main():
         df["experiment"] = label
         df["_source_dir"] = path
         rows.append(df)
-        print(f"loaded {label}  ({len(df)} rows from {csv_path})")
+        if "checkpoint_protocol" in df.columns:
+            protocols = sorted(str(x) for x in df["checkpoint_protocol"].dropna().unique())
+            suffix = f", protocol={','.join(protocols)}" if protocols else ""
+        else:
+            suffix = ", protocol=unknown_legacy_csv"
+        print(f"loaded {label}  ({len(df)} rows from {csv_path}{suffix})")
 
     if not rows:
         sys.exit("No CSVs loaded; nothing to plot.")

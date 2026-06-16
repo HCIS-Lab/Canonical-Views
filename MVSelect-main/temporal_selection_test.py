@@ -480,7 +480,12 @@ def main():
     # --- Evaluate ---
     rows = []
     skipped_no_epoch_ckpt = []
+    checkpoint_protocol = (
+        "classifier_at_epoch_t" if args.per_epoch_checkpoint
+        else "final_classifier_fixed"
+    )
     for epoch in tqdm(epochs_all, desc="epochs"):
+        active_ckpt = final_ckpt
         # Per-epoch model swap if requested
         if args.per_epoch_checkpoint:
             epoch_ckpt = os.path.join(logdir_for_checkpoints, f"model_e{epoch}.pth")
@@ -488,6 +493,7 @@ def main():
                 skipped_no_epoch_ckpt.append(epoch)
                 continue
             load_state(epoch_ckpt)
+            active_ckpt = epoch_ckpt
 
         trials = build_trials_for_epoch(all_sel[epoch], args.data_root,
                                          classnames, args.split)
@@ -497,7 +503,13 @@ def main():
             res = evaluate_epoch(model, trials, cond, epoch, transform, device, args)
             if res is None:
                 continue
-            rows.append({"epoch": epoch, "condition": cond, **res})
+            rows.append({
+                "epoch": epoch,
+                "condition": cond,
+                "checkpoint_protocol": checkpoint_protocol,
+                "checkpoint_path": active_ckpt,
+                **res,
+            })
 
     if skipped_no_epoch_ckpt:
         print(f"Skipped {len(skipped_no_epoch_ckpt)} epoch(s) — no matching "

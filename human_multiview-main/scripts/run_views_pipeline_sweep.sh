@@ -35,10 +35,11 @@ LIMIT="${LIMIT:-}"
 
 # Where to look up MVSelect experiment folders by bare name
 MVSELECT_META_LOGS="${MVSELECT_META_LOGS:-${ROOT_DIR}/../MVSelect-main/meta_logs/${DATASET}}"
+COMPARISON_SET="${COMPARISON_SET:-freeze}"  # freeze | selector_limit
 
 # --- Experiment list (EDIT ME) ---
 # Each entry: "<exp_folder_basename>[:<label>]"
-EXPS=(
+FREEZE_EXPS=(
     "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
     "freeze_10_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_10"
     "freeze_20_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_20"
@@ -46,11 +47,31 @@ EXPS=(
     "freeze_40_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_40"
     "freeze_50_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_50"
 )
+SELECTOR_LIMIT_EXPS=(
+    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
+    "resnet18steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_expanded"
+    "resnet18steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened"
+    "resnet18steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened_remainder"
+    "resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_remainder"
+)
+case "${COMPARISON_SET}" in
+    freeze)
+        EXPS=("${FREEZE_EXPS[@]}")
+        ;;
+    selector_limit)
+        EXPS=("${SELECTOR_LIMIT_EXPS[@]}")
+        ;;
+    *)
+        echo "ERROR: unknown COMPARISON_SET=${COMPARISON_SET}. Use freeze or selector_limit."
+        exit 1
+        ;;
+esac
 
 # ---------------------------------------------------------------------------
 
 echo "=========================================="
 echo "Per-experiment VGGT pipeline sweep"
+echo "  COMPARISON_SET     = ${COMPARISON_SET}"
 echo "  DATASET            = ${DATASET}"
 echo "  GPUS per exp       = ${GPUS}"
 echo "  MODELS             = ${MODELS}"

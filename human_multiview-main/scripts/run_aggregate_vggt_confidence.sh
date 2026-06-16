@@ -15,7 +15,21 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # ---------------------------------------------------------------------------
 # Comparison configuration — edit these
 # ---------------------------------------------------------------------------
-COMPARISON_NAME="${COMPARISON_NAME:-vggt_confidence_freeze_sweep}"
+COMPARISON_SET="${COMPARISON_SET:-freeze}"  # freeze | selector_limit
+if [ -z "${COMPARISON_NAME:-}" ]; then
+    case "${COMPARISON_SET}" in
+        freeze)
+            COMPARISON_NAME="vggt_confidence_freeze_sweep"
+            ;;
+        selector_limit)
+            COMPARISON_NAME="vggt_confidence_selector_limit_sweep"
+            ;;
+        *)
+            echo "ERROR: unknown COMPARISON_SET=${COMPARISON_SET}. Use freeze or selector_limit."
+            exit 1
+            ;;
+    esac
+fi
 MODEL="${MODEL:-vggt}"
 VALUE="${VALUE:-agent_mean}"          # agent_mean | delta_mean | macro_agent | ...
 
@@ -25,15 +39,29 @@ VALUE="${VALUE:-agent_mean}"          # agent_mean | delta_mean | macro_agent | 
 # run_views_pipeline_sweep.sh — one summary folder per experiment under
 # results/views/v<VIEW_TYPE>/<exp_label>/summary/.
 # If you ran the sweep with a different layout, edit accordingly.
-SUMMARIES=(
+FREEZE_SUMMARIES=(
     "results/views/v01234/no_freeze/summary:no_freeze"
     "results/views/v01234/freeze_10/summary:freeze_10"
     "results/views/v01234/freeze_20/summary:freeze_20"
     "results/views/v01234/freeze_30/summary:freeze_30"
     "results/views/v01234/freeze_40/summary:freeze_40"
     "results/views/v01234/freeze_50/summary:freeze_50"
-    # Add more lines as needed.
 )
+SELECTOR_LIMIT_SUMMARIES=(
+    "results/views/v01234/no_freeze/summary:select_all"
+    "results/views/v01234/select_expanded/summary:select_expanded"
+    "results/views/v01234/select_foreshortened/summary:select_foreshortened"
+    "results/views/v01234/select_foreshortened_remainder/summary:select_foreshortened_remainder"
+    "results/views/v01234/select_remainder/summary:select_remainder"
+)
+case "${COMPARISON_SET}" in
+    freeze)
+        SUMMARIES=("${FREEZE_SUMMARIES[@]}")
+        ;;
+    selector_limit)
+        SUMMARIES=("${SELECTOR_LIMIT_SUMMARIES[@]}")
+        ;;
+esac
 
 STYLE="${STYLE:-heatmap}"            # line | heatmap | sorted_bars | rank_stacked | both | all
                                      #   sorted_bars: grouped bars per epoch sorted left→right by value
@@ -50,6 +78,7 @@ OUTPUT_DIR="${ROOT_DIR}/compare/${COMPARISON_NAME}"
 mkdir -p "${OUTPUT_DIR}"
 echo "=========================================="
 echo "Aggregating VGGT confidence:"
+echo "  SET        = ${COMPARISON_SET}"
 echo "  COMPARISON = ${COMPARISON_NAME}"
 echo "  MODEL      = ${MODEL}"
 echo "  VALUE      = ${VALUE}"

@@ -129,6 +129,15 @@ This fork adds probes that use VGGT / Pi3 / DUSt3R / MASt3R / DINOv2 to evaluate
 view selections produced by the MVSelect agent (see `MVSelect-main/`), and to
 characterize view-type informativeness intrinsic to a ModelNet dataset.
 
+The original paper's Fig. 3-left is a **MOCHI oddity-task accuracy** figure:
+`scripts/run_evaluation.py` loads MOCHI and predicts the odd image from
+pairwise model scores. The MVSelect extension below is a related but different
+analysis: it keeps the dataset as ModelNet and asks whether the views selected
+by a trained selector produce higher geometric confidence than random views.
+Use the MOCHI command when evaluating perception models such as VGGT/Pi3/DINOv2;
+use the MVSelect sweep when comparing selector policies such as `no_freeze`,
+`freeze_10`, or `selview_expanded_family`.
+
 All scripts share two hardcoded defaults that point at the local data layout:
 - `--data_root /nfs/wattrel/.../modelnet_32_60_1_23`
 - `--selection_dir /nfs/wattrel/.../MVSelect-main/meta_logs/rgb/...` (when needed)
@@ -160,6 +169,15 @@ GPUS=2 LIMIT=5 ./scripts/run_pipeline.sh
 # Different selected_view_type filter
 VIEW_TYPE=01 ./scripts/run_pipeline.sh         # expanded-family buckets only
 VIEW_TYPE=23 ./scripts/run_pipeline.sh         # foreshortened-family buckets only
+```
+
+To compare several MVSelect training conditions, use the sweep wrapper. It
+keeps the freeze sweep and selector-limit sweep separate so the plots do not
+mix conceptually different manipulations.
+
+```bash
+GPUS=4 MODELS="vggt dinov2" ./scripts/run_views_pipeline_sweep.sh
+COMPARISON_SET=selector_limit GPUS=4 MODELS="vggt dinov2" ./scripts/run_views_pipeline_sweep.sh
 ```
 
 Internally the wrapper runs the three steps in sequence:
@@ -286,9 +304,8 @@ experiment, producing the `*_selection.json` files the VGGT pipeline reads.
 For each MVSelect experiment you want to compare, the per-experiment pipeline
 needs to write its own `overall_summary.csv` into a unique folder. Two ways:
 
-**A.1 (recommended) — sweep wrapper.** Edit the `EXPS=( ... )` array at the
-top of `scripts/run_views_pipeline_sweep.sh` to list the MVSelect experiment
-folder names + short labels, then run it once. The wrapper invokes
+**A.1 (recommended) — sweep wrapper.** Run one comparison family at a time.
+The wrapper invokes
 `run_pipeline.sh` per experiment with the right `SELECTION_DIR` /
 `OUTPUT_DIR`, populating
 
@@ -308,8 +325,11 @@ for every experiment.
 ```bash
 cd human_multiview-main
 
-# Edit EXPS=( ... ) in this file, then:
+# Freeze sweep: no_freeze vs freeze_10..freeze_50
 ./scripts/run_views_pipeline_sweep.sh
+
+# Selector-limit sweep: select_all vs restricted selector policies
+COMPARISON_SET=selector_limit ./scripts/run_views_pipeline_sweep.sh
 
 # Smoke test on the first 10 trials per experiment
 LIMIT=10 ./scripts/run_views_pipeline_sweep.sh
@@ -317,6 +337,9 @@ LIMIT=10 ./scripts/run_views_pipeline_sweep.sh
 
 Each experiment runs sequentially and uses all `GPUS` GPUs internally via
 sharding. With ~6 experiments and `GPUS=4`, expect roughly N × 15–20 minutes.
+The selector-limit sweep reuses the unrestricted experiment output under
+`results/views/v01234/no_freeze/`; the aggregation step labels it as
+`select_all`.
 
 **A.2 — manual one-experiment-at-a-time.** If you want to launch experiments
 individually (e.g., on different machines), call `run_pipeline.sh` with the
@@ -345,9 +368,11 @@ aggregator. It reads each experiment's `overall_summary.csv` and overlays
 the pair-level and set-level confidence curves:
 
 ```bash
-# Bash wrapper with hard-coded SUMMARIES=( ... ) (default labels match the
-# layout produced by run_views_pipeline_sweep.sh above).
+# Freeze sweep: no_freeze vs freeze_10..freeze_50
 ./scripts/run_aggregate_vggt_confidence.sh
+
+# Selector-limit sweep: select_all vs restricted selector policies
+COMPARISON_SET=selector_limit ./scripts/run_aggregate_vggt_confidence.sh
 
 # Many experiments → heatmap is much more readable than overlaid lines
 STYLE=heatmap ./scripts/run_aggregate_vggt_confidence.sh

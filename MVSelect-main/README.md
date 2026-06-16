@@ -131,6 +131,7 @@ Choices:
 | `all` | any currently available view (default) |
 | `expanded_family` | Expanded + Expanded-like |
 | `foreshortened_family` | Foreshortened + Foreshortened-like |
+| `foreshortened_family_remainder` | Foreshortened + Foreshortened-like + Remainder |
 | `remainder` | views outside the two families |
 
 ```bash
@@ -141,6 +142,10 @@ python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
 # Foreshortened-family-only selector
 python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
   --dataset rgb --save_feature --selector_view_limit foreshortened_family
+
+# Foreshortened-family + remainder selector
+python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
+  --dataset rgb --save_feature --selector_view_limit foreshortened_family_remainder
 
 # Remainder-only selector
 python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
@@ -153,6 +158,8 @@ unrestricted runs:
 ```text
 logs/rgb/resnet18steps5_selview_expanded_family_train_ins25_..._<timestamp>/
 meta_logs/rgb/resnet18steps5_selview_expanded_family_train_ins25_..._e100/
+logs/rgb/resnet18steps5_selview_foreshortened_family_remainder_train_ins25_..._<timestamp>/
+meta_logs/rgb/resnet18steps5_selview_foreshortened_family_remainder_train_ins25_..._e100/
 ```
 
 If the restricted family is exhausted before all selector steps are consumed,
@@ -289,8 +296,9 @@ cd MVSelect-main
 #         (idempotent — re-runs are a no-op unless --overwrite)
 python3 compute_cluster_metrics.py --rep_list rgb
 
-# Step 2: overlay the EXPS list (edit array at the top of the wrapper)
-./run_cluster_metrics_pipeline.sh           # default heatmap
+# Step 2: overlay one comparison set at a time
+./run_cluster_metrics_pipeline.sh                         # freeze sweep
+COMPARISON_SET=selector_limit ./run_cluster_metrics_pipeline.sh
 STYLE=sorted_bars ./run_cluster_metrics_pipeline.sh
 METRICS="separability silhouette_class_selected silhouette_view_index" STYLE=line BIN_EPOCHS=20 ./run_cluster_metrics_pipeline.sh
 OVERWRITE=1 ./run_cluster_metrics_pipeline.sh   # force recompute step 1
@@ -299,6 +307,15 @@ OVERWRITE=1 ./run_cluster_metrics_pipeline.sh   # force recompute step 1
 The wrapper runs step 1 then step 2 in sequence; if step 1 has already
 populated CSVs from a previous run it skips them (re-aggregation alone is
 fast).
+
+Comparison sets are intentionally separate:
+
+- `COMPARISON_SET=freeze` writes `compare/cluster_metrics_freeze_sweep/`:
+  `no_freeze` vs `freeze_10` through `freeze_50`.
+- `COMPARISON_SET=selector_limit` writes
+  `compare/cluster_metrics_selector_limit_sweep/`: `select_all` vs
+  `select_expanded`, `select_foreshortened`,
+  `select_foreshortened_remainder`, and `select_remainder`.
 
 Outputs (under `compare/<COMPARISON_NAME>/`):
 - `<metric>_line.png` / `<metric>_heatmap.png` / `<metric>_sorted_bars.png` /
@@ -413,6 +430,7 @@ python temporal_selection_test.py \
 # training to have been run with --save_every_epoch >0).
 ./run_temporal_test_all.sh                                        # single GPU, model-at-t
 GPUS=4 ./run_temporal_test_all.sh                                 # 4-GPU round-robin
+COMPARISON_SET=selector_limit GPUS=4 ./run_temporal_test_all.sh    # only selector-limit experiments
 PER_EPOCH_CHECKPOINT=0 ./run_temporal_test_all.sh                 # use fixed final classifier instead
 ```
 
@@ -502,6 +520,11 @@ test errors out cleanly into that experiment's `run.log` and the sweep
 continues to the next one. To force the original fixed-final-classifier
 protocol on a sweep, pass `PER_EPOCH_CHECKPOINT=0`.
 
+Use `COMPARISON_SET=freeze` or `COMPARISON_SET=selector_limit` to evaluate
+only the experiments that will later be aggregated by
+`run_aggregate_temporal_tests.sh`. The default `COMPARISON_SET=all` keeps the
+old behavior and scans every stage-2 experiment under `meta_logs/`.
+
 ### Aggregating temporal-test runs across experiments (`aggregate_temporal_tests.py`)
 
 `temporal_selection_test.py` outputs one set of plots per experiment, each with
@@ -519,8 +542,9 @@ python3 aggregate_temporal_tests.py \
   --dataset rgb \
   --output_dir compare/steps3_freeze_sweep
 
-# Or use the bash wrapper that holds the experiment list in an editable array
+# Or use the bash wrapper for the standard comparison sets
 ./run_aggregate_temporal_tests.sh
+COMPARISON_SET=selector_limit ./run_aggregate_temporal_tests.sh
 ```
 
 Outputs (in `--output_dir`):
@@ -537,7 +561,9 @@ multiple comparison sets; `--title_suffix "..."` adds a second title line;
 `experiments × epochs` grid (rows = experiments, color = deviation/margin)
 which is much easier to read than overlaid lines when there are many
 experiments; `--bin_epochs N` collapses the heatmap's epoch axis into N
-bins for an even more compact view.
+bins for an even more compact view. The bash wrapper defaults to
+`BIN_EPOCHS=10`, so 100 epoch-level rows become 10 heatmap columns by default.
+Use `BIN_EPOCHS=0` to restore the full epoch-by-epoch heatmap.
 
 **The bash wrapper defaults to `STYLE=heatmap`** because overlaid lines get
 unreadable past ~4 experiments. Other options:
@@ -565,10 +591,16 @@ each other. If you previously ran in line mode and only see the old
 `deviation_<cond>.png` files in the output dir, the new files are sitting
 next to them under the suffixed names; or just clear the folder and re-run.
 
-Edit the `EXPS=( ... )` array at the top of `run_aggregate_temporal_tests.sh`
-to define a comparison set, plus the env vars at the top (`COMPARISON_NAME`,
-`DATASET`, `SMOOTH`, `YMAX_DEV`, `YMAX_MARGIN`) to tune the run without
-editing the script body.
+The wrapper keeps comparison families separate:
+
+- `COMPARISON_SET=freeze` writes `compare/steps5_freeze_sweep/`:
+  `no_freeze` vs `freeze_10` through `freeze_50`.
+- `COMPARISON_SET=selector_limit` writes `compare/steps5_selector_limit_sweep/`:
+  `select_all` vs `select_expanded`, `select_foreshortened`,
+  `select_foreshortened_remainder`, and `select_remainder`.
+
+Use env vars (`COMPARISON_NAME`, `DATASET`, `SMOOTH`, `YMAX_DEV`,
+`YMAX_MARGIN`, `STYLE`) to tune the run without editing the script body.
 
 ### Zero-shot single-view classification probe
 
@@ -608,6 +640,51 @@ trained on ModelNet, so calling it "zero-shot" is only true relative to the
 view-type *labels* (the classifier doesn't know which bucket a view is
 from). For a probe that's zero-shot in the stronger sense — a model that has
 never seen ModelNet at all — see the CLIP-based probe below.
+
+### Zero-shot MOCHI oddity from MVSelect features (`mochi_zero_shot_feature_oddity.py`)
+
+This tests whether a trained MVSelect/MVCNN representation supports the MOCHI
+oddity task without training a MOCHI probe. For each trial, it extracts one
+feature vector per image, computes pairwise cosine similarities, assigns each
+image its mean similarity to the others, and predicts the oddity as the image
+with the lowest mean similarity.
+
+This is the closest zero-shot analogue to Bonnen et al.'s pairwise decision
+rule for our checkpoints. It ignores the ModelNet classifier logits and uses
+features only.
+
+Important checkpoint note:
+
+- `model.pth` is overwritten every epoch and therefore contains only the final
+  checkpoint.
+- `model_e<E>.pth` exists only if training used `--save_every_epoch <N>`.
+- `feature_<E>.npz` cannot replace `model_e<E>.pth` for MOCHI, because those
+  feature files were extracted from ModelNet test images, not MOCHI images.
+
+```bash
+cd MVSelect-main
+
+# Final checkpoints: no_freeze vs freeze_10..freeze_50
+./run_mochi_zero_shot_feature_oddity.sh
+
+# Final checkpoints: select_all vs selector-view-limit runs
+COMPARISON_SET=selector_limit ./run_mochi_zero_shot_feature_oddity.sh
+
+# Model-at-epoch, only if model_e<E>.pth snapshots exist
+PER_EPOCH_CHECKPOINT=1 EPOCHS=10,20,30,40,50,60,70,80,90,100 \
+  ./run_mochi_zero_shot_feature_oddity.sh
+
+COMPARISON_SET=selector_limit PER_EPOCH_CHECKPOINT=1 EPOCHS=10,20,30,40,50,60,70,80,90,100 \
+  ./run_mochi_zero_shot_feature_oddity.sh
+```
+
+Outputs land under `compare/mochi_feature_oddity_<comparison>/`:
+- `mochi_feature_oddity_trials.csv` — one row per trial/checkpoint.
+- `mochi_feature_oddity_summary.csv` — trial accuracy, condition-macro
+  chance-normalized accuracy, and mean similarity margin.
+- `mochi_feature_oddity_bar.png` — final-checkpoint comparison.
+- `mochi_feature_oddity_heatmap.png` and
+  `mochi_feature_oddity_over_epochs.png` — per-epoch comparisons.
 
 ### CLIP zero-shot single-view classification probe (`clip_zero_shot_view_type.py`)
 

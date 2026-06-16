@@ -93,6 +93,8 @@ class ClassifierTrainer(BaseTrainer):
             allowed = is_expanded | is_expanded_like
         elif limit == "foreshortened_family":
             allowed = is_foreshortened | is_foreshortened_like
+        elif limit == "foreshortened_family_remainder":
+            allowed = ~(is_expanded | is_expanded_like)
         elif limit == "remainder":
             allowed = ~(is_expanded | is_expanded_like |
                         is_foreshortened | is_foreshortened_like)
