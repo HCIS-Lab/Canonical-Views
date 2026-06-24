@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-if [ "$#" -lt 10 ]; then
+if [ "$#" -lt 20 ]; then
   echo "Usage: $0 N GPU_ID script.py [script_args...]"
   exit 1
 fi
@@ -40,5 +40,6 @@ done
 # python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 --dataset rgb --save_feature --selector_view_limit expanded_family
 
 
+# ./run_main.sh 5 0 main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 --dataset rgb --batch_size 6 --save_feature --skip_stage1 --lr 5e-4 --weight_decay 1e-3
 
 # ./run_main.sh 5 1 main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 --dataset rgb --batch_size 6 --save_feature --selector_view_limit foreshortened_family_remainder --skip_stage1 --lr 5e-4 --weight_decay 1e-3

@@ -14,16 +14,15 @@
 #   NUM_TRAIN_INSTANCES=25
 #   MAX_EPOCHS=               optional smoke-test cap
 #   COMPARISON_SET=all        all | freeze | selector_limit
-#   PER_EPOCH_CHECKPOINT=1    model-at-t protocol (default; needs training to
-#                             have been run with --save_every_epoch >0). Set
-#                             to 0 to use the final classifier instead (the
-#                             original fixed-classifier protocol).
+#   PER_EPOCH_CHECKPOINT=0    final-classifier protocol (default). Set to 1
+#                             for model-at-t, which requires training with
+#                             --save_every_epoch >0.
 #
 # Examples:
-#   ./run_temporal_test_all.sh                            # model-at-t (default)
+#   ./run_temporal_test_all.sh                            # final classifier (default)
 #   GPUS=4 ./run_temporal_test_all.sh                     # 4-GPU round-robin
 #   COMPARISON_SET=selector_limit GPUS=4 ./run_temporal_test_all.sh
-#   PER_EPOCH_CHECKPOINT=0 ./run_temporal_test_all.sh     # fixed final classifier
+#   PER_EPOCH_CHECKPOINT=1 ./run_temporal_test_all.sh     # classifier-at-epoch-t
 #   REP_LIST=rgb MAX_EPOCHS=5 ./run_temporal_test_all.sh  # smoke test
 
 set -uo pipefail
@@ -38,7 +37,7 @@ NON_LIKE="${NON_LIKE:-0}"
 NUM_TRAIN_INSTANCES="${NUM_TRAIN_INSTANCES:-25}"
 MAX_EPOCHS="${MAX_EPOCHS:-}"
 COMPARISON_SET="${COMPARISON_SET:-all}"  # all | freeze | selector_limit
-PER_EPOCH_CHECKPOINT="${PER_EPOCH_CHECKPOINT:-1}"
+PER_EPOCH_CHECKPOINT="${PER_EPOCH_CHECKPOINT:-0}"
 
 # Pass-through flags
 extra_flags=""
@@ -108,10 +107,10 @@ should_include_exp() {
         selector_limit)
             case "${name}" in
                 resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                resnet18steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                resnet18steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                resnet18steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100)
+                *selview_expanded_family_train*|\
+                *selview_foreshortened_family_train*|\
+                *selview_foreshortened_family_remainder_train*|\
+                *selview_remainder_train*)
                     return 0
                     ;;
             esac

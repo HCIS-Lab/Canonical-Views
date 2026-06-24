@@ -380,6 +380,80 @@ What to look for in the freeze sweep:
   setting buys the most class-aware, view-invariant representation per
   epoch?" in one chart.
 
+### Mid-level visible-shape features of selected views
+
+To test whether the selector is learning more than an arbitrary view convention,
+use `midlevel_shape_features.py`. It computes descriptors directly from the
+already-rendered ModelNet PNGs, then joins them to `*_selection.json` so each
+epoch is summarized by the views the agent actually selected.
+
+Detailed metric definitions, implementation notes, and caveats are in
+[`README_midlevel_shape_features.md`](README_midlevel_shape_features.md).
+
+You do **not** need ShapeNet meshes or dataset regeneration for this version.
+These are image-derived, visible-structure measurements: "what mid-level shape
+information does this camera view expose?" ShapeNet would only be necessary if
+you want object-intrinsic 3D ground-truth quantities, such as mesh symmetry axes,
+true 3D medial axes, or part annotations independent of viewpoint.
+
+Metrics:
+
+| group | metrics | interpretation |
+|---|---|---|
+| axis visibility | `ellipse_orientation_deg`, `ellipse_aspect_ratio`, `skeleton_length_norm`, `skeleton_elongation` | whether the silhouette exposes a clear major axis / elongated structure |
+| symmetry / part organization | `bilateral_symmetry`, `medial_axis_symmetry`, `skeleton_endpoint_count`, `skeleton_branchpoint_count`, `skeleton_branch_density` | whether the visible shape exposes organized symmetric or branched structure |
+| edge organization | `dominant_edge_orientation_deg`, `edge_entropy`, `edge_anisotropy` | whether edges are organized around dominant orientations or isotropic/noisy |
+
+Orientation columns use axial circular averaging in the epoch summaries, so
+0 degrees and 180 degrees are treated as the same axis. The default comparison
+heatmaps emphasize scalar "amount/organization" metrics; orientation columns
+remain in the CSVs for more targeted inspection.
+
+The default comparison value is `lift`:
+
+```text
+lift_metric = mean(metric on selected views at epoch t)
+              - mean(metric over all candidate views of the same object instances)
+```
+
+So a positive lift means the selector is using views with more of that visible
+mid-level structure than the same objects' all-view baseline. This avoids
+confusing "some object classes are more elongated/symmetric" with "the selector
+prefers views that expose elongation/symmetry."
+
+Commands:
+
+```bash
+cd MVSelect-main
+
+# One experiment: writes <selection_dir>/midlevel_features/
+python3 midlevel_shape_features.py \
+  --selection_dir meta_logs/rgb/resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100 \
+  --bin_epochs 10
+
+# Freeze sweep: no_freeze vs freeze_10..freeze_50
+./run_midlevel_shape_features_pipeline.sh
+
+# Selector-limit sweep: select_all vs select_expanded/select_foreshortened/...
+COMPARISON_SET=selector_limit ./run_midlevel_shape_features_pipeline.sh
+
+# Plot raw selected values instead of selected-minus-baseline lift
+VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
+```
+
+Outputs:
+
+- `<selection_dir>/midlevel_features/per_view_midlevel_features.csv` — cached
+  image descriptors for all candidate PNGs.
+- `<selection_dir>/midlevel_features/selected_midlevel_by_run_epoch.csv` — one
+  row per selection file and epoch.
+- `<selection_dir>/midlevel_features/selected_midlevel_summary.csv` — averaged
+  over selection files per epoch.
+- `<selection_dir>/midlevel_features/midlevel_lift_heatmap.png` — per-experiment
+  selected-minus-baseline heatmap.
+- `compare/midlevel_shape_<comparison>_sweep/*_heatmap.png` — cross-experiment
+  freeze or selector-limit plots.
+
 ### Temporal selection test — manipulation robustness + margin stability (`temporal_selection_test.py`)
 
 Replay an experiment's per-epoch agent selections through the **final**
@@ -426,12 +500,11 @@ python temporal_selection_test.py \
   --max_epochs 10
 
 # Sweep every stage-2 experiment in meta_logs/ in one go.
-# Default: --per_epoch_checkpoint ON (classifier-at-epoch-t protocol — needs
-# training to have been run with --save_every_epoch >0).
-./run_temporal_test_all.sh                                        # single GPU, model-at-t
+# Default: final classifier held fixed (uses model.pth).
+./run_temporal_test_all.sh                                        # single GPU, final classifier
 GPUS=4 ./run_temporal_test_all.sh                                 # 4-GPU round-robin
 COMPARISON_SET=selector_limit GPUS=4 ./run_temporal_test_all.sh    # only selector-limit experiments
-PER_EPOCH_CHECKPOINT=0 ./run_temporal_test_all.sh                 # use fixed final classifier instead
+PER_EPOCH_CHECKPOINT=1 ./run_temporal_test_all.sh                 # classifier-at-epoch-t, needs model_e<E>.pth
 ```
 
 **Path resolution.** `--selection_dir` accepts either the bare experiment
@@ -512,13 +585,11 @@ fixed` vs `classifier-at-epoch-t`) so figures from the two modes don't get
 mixed up.
 
 **Sweep-wrapper default.** `run_temporal_test_all.sh` defaults to
-`PER_EPOCH_CHECKPOINT=1`, i.e. the **classifier-at-epoch-t** protocol — the
-more diagnostic one for "what was driving view-selection change?" It assumes
-the underlying training runs were done with `--save_every_epoch >0` so the
-per-epoch snapshots exist; for any experiment that doesn't have them, the
-test errors out cleanly into that experiment's `run.log` and the sweep
-continues to the next one. To force the original fixed-final-classifier
-protocol on a sweep, pass `PER_EPOCH_CHECKPOINT=0`.
+`PER_EPOCH_CHECKPOINT=0`, i.e. the **final classifier held fixed** protocol.
+This uses each experiment's final `model.pth` and works for ordinary training
+runs. To run the classifier-at-epoch-t protocol, pass
+`PER_EPOCH_CHECKPOINT=1`; that requires `model_e<E>.pth` snapshots from
+training with `--save_every_epoch >0`.
 
 Use `COMPARISON_SET=freeze` or `COMPARISON_SET=selector_limit` to evaluate
 only the experiments that will later be aggregated by

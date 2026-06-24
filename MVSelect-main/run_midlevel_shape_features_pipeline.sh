@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
-# Aggregate temporal_selection_test.py CSVs from a hard-coded list of
-# experiments into overlaid comparison plots. Edit the EXPS array below
-# to define a comparison set.
+# Compute and aggregate image-derived mid-level shape features for selected
+# MVSelect views.
 #
-# Each entry is "EXPERIMENT_FOLDER[:LEGEND_LABEL]". The folder is
-# resolved against meta_logs/<DATASET>/ when bare. If LEGEND_LABEL is
-# omitted, the folder basename is used.
+# Defaults:
+#   COMPARISON_SET=freeze       no_freeze vs freeze_10..freeze_50
+#   VALUE=lift                  selected mean - all-candidate-view baseline
+#   STYLE=heatmap
+#   BIN_EPOCHS=10
 #
-# Outputs go under compare/<COMPARISON_NAME>/.
+# Examples:
+#   ./run_midlevel_shape_features_pipeline.sh
+#   COMPARISON_SET=selector_limit ./run_midlevel_shape_features_pipeline.sh
+#   VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
 
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# ---------------------------------------------------------------------------
-# Comparison configuration — edit these
-# ---------------------------------------------------------------------------
 COMPARISON_SET="${COMPARISON_SET:-freeze}"  # freeze | selector_limit
 if [ -z "${COMPARISON_NAME:-}" ]; then
     case "${COMPARISON_SET}" in
         freeze)
-            COMPARISON_NAME="steps5_freeze_sweep"
+            COMPARISON_NAME="midlevel_shape_freeze_sweep"
             ;;
         selector_limit)
-            COMPARISON_NAME="steps5_selector_limit_sweep"
+            COMPARISON_NAME="midlevel_shape_selector_limit_sweep"
             ;;
         *)
             echo "ERROR: unknown COMPARISON_SET=${COMPARISON_SET}. Use freeze or selector_limit."
@@ -31,7 +32,19 @@ if [ -z "${COMPARISON_NAME:-}" ]; then
             ;;
     esac
 fi
+
 DATASET="${DATASET:-rgb}"
+SPLIT="${SPLIT:-test}"
+DATA_ROOT="${DATA_ROOT:-/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/modelnet_32_60_1_23}"
+CACHE_CSV="${CACHE_CSV:-${ROOT_DIR}/cache/midlevel_features_${SPLIT}.csv}"
+FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-0}"
+LIMIT_IMAGES="${LIMIT_IMAGES:-}"
+
+VALUE="${VALUE:-lift}"          # selected | lift | baseline
+STYLE="${STYLE:-heatmap}"       # heatmap | line | both
+BIN_EPOCHS="${BIN_EPOCHS:-10}"
+TITLE_SUFFIX="${TITLE_SUFFIX:-}"
+METRICS="${METRICS:-ellipse_aspect_ratio skeleton_elongation skeleton_length_norm bilateral_symmetry medial_axis_symmetry skeleton_branch_density edge_anisotropy edge_entropy}"
 
 FREEZE_EXPS=(
     "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
@@ -49,18 +62,22 @@ pick_exp() {
     local meta_dir="${ROOT_DIR}/meta_logs/${DATASET}"
     local p
 
-    # Prefer a candidate that already has temporal_test.csv.
     for p in "${meta_dir}/${exact}" "$@"; do
         for d in ${p}; do
-            if [ -f "${d}/temporal_test/temporal_test.csv" ]; then
+            if [ -f "${d}/midlevel_features/selected_midlevel_summary.csv" ]; then
                 echo "$(basename "${d}"):${label}"
                 return 0
             fi
         done
     done
-
-    # Otherwise return the first existing directory so the aggregator prints
-    # the useful "missing temporal_test.csv" warning for the right experiment.
+    for p in "${meta_dir}/${exact}" "$@"; do
+        for d in ${p}; do
+            if compgen -G "${d}/*_selection.json" >/dev/null; then
+                echo "$(basename "${d}"):${label}"
+                return 0
+            fi
+        done
+    done
     for p in "${meta_dir}/${exact}" "$@"; do
         for d in ${p}; do
             if [ -d "${d}" ]; then
@@ -69,8 +86,6 @@ pick_exp() {
             fi
         done
     done
-
-    # Last resort: exact basename. This preserves the old warning message.
     echo "${exact}:${label}"
 }
 
@@ -90,6 +105,7 @@ SELECTOR_LIMIT_EXPS=(
         resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100 \
         "${ROOT_DIR}/meta_logs/${DATASET}/"*selview_remainder_train*)"
 )
+
 case "${COMPARISON_SET}" in
     freeze)
         EXPS=("${FREEZE_EXPS[@]}")
@@ -99,50 +115,71 @@ case "${COMPARISON_SET}" in
         ;;
 esac
 
-# Optional plot tuning
-SMOOTH="${SMOOTH:-1}"               # rolling mean window (1 = off)
-YMAX_DEV="${YMAX_DEV:-}"             # cap deviation plots at this % (empty = auto)
-YMAX_MARGIN="${YMAX_MARGIN:-}"       # cap margin plot (empty = auto)
-TITLE_SUFFIX="${TITLE_SUFFIX:-}"     # extra title line
-STYLE="${STYLE:-heatmap}"            # line | heatmap | sorted_bars | rank_stacked | both | all
-                                     #   default heatmap: easier than overlaid lines for many experiments
-                                     #   sorted_bars: grouped bars per epoch sorted left→right by value
-                                     #                (real y-axis; rank flips show as colour reshuffles)
-                                     #   rank_stacked: same idea but stacked (y-axis is a sum)
-BIN_EPOCHS="${BIN_EPOCHS:-10}"       # bin epochs into N columns (heatmap/bars; 0 = no binning)
-
 OUTPUT_DIR="${ROOT_DIR}/compare/${COMPARISON_NAME}"
-
-# ---------------------------------------------------------------------------
-
 mkdir -p "${OUTPUT_DIR}"
+
 echo "=========================================="
-echo "Aggregating temporal_test runs:"
+echo "Mid-level shape feature pipeline:"
 echo "  SET        = ${COMPARISON_SET}"
 echo "  COMPARISON = ${COMPARISON_NAME}"
 echo "  DATASET    = ${DATASET}"
+echo "  SPLIT      = ${SPLIT}"
+echo "  VALUE      = ${VALUE}"
+echo "  STYLE      = ${STYLE}"
+echo "  BIN_EPOCHS = ${BIN_EPOCHS}"
+echo "  CACHE_CSV  = ${CACHE_CSV}"
 echo "  OUTPUT     = ${OUTPUT_DIR}"
 echo "  EXPS:"
 for e in "${EXPS[@]}"; do echo "    - ${e}"; done
 echo "=========================================="
 
+compute_extra=()
+[ "${FORCE_RECOMPUTE}" = "1" ] && compute_extra+=(--force_recompute)
+[ -n "${LIMIT_IMAGES}" ] && compute_extra+=(--limit_images "${LIMIT_IMAGES}")
+
+echo "[1/2] Computing per-experiment selected mid-level summaries..."
+for spec in "${EXPS[@]}"; do
+    folder="${spec%%:*}"
+    label="${spec##*:}"
+    exp_dir="${ROOT_DIR}/meta_logs/${DATASET}/${folder}"
+    if [ ! -d "${exp_dir}" ]; then
+        echo "SKIP ${label}: no experiment folder at ${exp_dir}"
+        continue
+    fi
+    if ! compgen -G "${exp_dir}/*_selection.json" >/dev/null; then
+        echo "SKIP ${label}: no *_selection.json in ${exp_dir}"
+        continue
+    fi
+    echo "  ${label} -> ${exp_dir}/midlevel_features"
+    python3 "${ROOT_DIR}/midlevel_shape_features.py" \
+        --data_root "${DATA_ROOT}" \
+        --split "${SPLIT}" \
+        --cache_csv "${CACHE_CSV}" \
+        --selection_dir "${exp_dir}" \
+        --bin_epochs "${BIN_EPOCHS}" \
+        "${compute_extra[@]}"
+done
+
+echo
+echo "[2/2] Aggregating across experiments..."
 exp_args=()
 for spec in "${EXPS[@]}"; do
     exp_args+=(--exp "${spec}")
 done
 
-extra=()
-[ -n "${TITLE_SUFFIX}" ] && extra+=(--title_suffix "${TITLE_SUFFIX}")
-[ -n "${YMAX_DEV}" ] && extra+=(--ymax_dev "${YMAX_DEV}")
-[ -n "${YMAX_MARGIN}" ] && extra+=(--ymax_margin "${YMAX_MARGIN}")
-[ "${SMOOTH}" != "1" ] && extra+=(--smooth "${SMOOTH}")
-extra+=(--style "${STYLE}")
-[ "${BIN_EPOCHS}" != "0" ] && extra+=(--bin_epochs "${BIN_EPOCHS}")
+agg_extra=()
+[ -n "${TITLE_SUFFIX}" ] && agg_extra+=(--title_suffix "${TITLE_SUFFIX}")
 
-python3 "${ROOT_DIR}/aggregate_temporal_tests.py" \
+python3 "${ROOT_DIR}/aggregate_midlevel_shape_features.py" \
     --dataset "${DATASET}" \
     --output_dir "${OUTPUT_DIR}" \
+    --value "${VALUE}" \
+    --style "${STYLE}" \
+    --bin_epochs "${BIN_EPOCHS}" \
+    --metrics ${METRICS} \
     "${exp_args[@]}" \
-    "${extra[@]}"
+    "${agg_extra[@]}"
 
-echo "Done. Plots and aggregated.csv are in ${OUTPUT_DIR}"
+echo "=========================================="
+echo "Done. Plots + aggregated.csv in ${OUTPUT_DIR}"
+echo "=========================================="
