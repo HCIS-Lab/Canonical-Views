@@ -435,7 +435,7 @@ The complete narrative for advisors is built from three independent probes:
 
 | probe | script | what it measures |
 |---|---|---|
-| Stage-1 classification (MVCNN) | `MVSelect-main/zero_shot_view_type_test.py` | semantic informativeness per view type |
+| CLIP single-view classification | `MVSelect-main/clip_zero_shot_view_type.py` | semantic informativeness per view type |
 | Single-view confidence (VGGT) | `view_type_single_view_confidence.py` | geometric informativeness per view type |
 | Pair-confidence by composition | `pair_confidence_control_test.py` | calibration of the confidence metric itself |
 

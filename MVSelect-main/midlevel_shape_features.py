@@ -39,6 +39,7 @@ VIEW_BUCKETS = [
 
 METRIC_GROUPS = {
     "axis_visibility": [
+        "ellipse_orientation_deg",
         "ellipse_aspect_ratio",
         "skeleton_elongation",
         "skeleton_length_norm",
@@ -562,26 +563,33 @@ def plot_lift_heatmap(summary, out_path, bin_epochs):
     plt.close(fig)
 
 
-def plot_category_curves(summary, out_path, bin_epochs):
+def plot_group_curve_figures(summary, output_dir, bin_epochs, value_prefix="selected"):
     binned = bin_epoch_df(summary, bin_epochs)
-    fig, axes = plt.subplots(3, 1, figsize=(9, 10), sharex=True)
-    for ax, (group, metrics) in zip(axes, METRIC_GROUPS.items()):
-        plotted = False
-        for metric in metrics:
-            col = f"selected_{metric}"
+    for group, metrics in METRIC_GROUPS.items():
+        available = [m for m in metrics if f"{value_prefix}_{m}" in binned.columns]
+        if not available:
+            continue
+        fig, axes = plt.subplots(len(available), 1,
+                                 figsize=(9, max(3, 2.2 * len(available))),
+                                 sharex=True)
+        if len(available) == 1:
+            axes = [axes]
+        for ax, metric in zip(axes, available):
+            col = f"{value_prefix}_{metric}"
             if col not in binned.columns:
                 continue
             ax.plot(binned["epoch"], binned[col], marker="o", ms=3, lw=1.5,
-                    label=metric)
-            plotted = True
-        ax.set_title(group.replace("_", " "))
-        ax.grid(alpha=0.3)
-        if plotted:
-            ax.legend(fontsize=8, loc="best")
-    axes[-1].set_xlabel("Training epoch")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
+                    color="#1f77b4")
+            if value_prefix == "lift":
+                ax.axhline(0, color="gray", ls="--", alpha=0.5)
+            ax.set_ylabel(metric, fontsize=8)
+            ax.grid(alpha=0.3)
+        axes[-1].set_xlabel("Training epoch")
+        fig.suptitle(f"{group.replace('_', ' ')} ({value_prefix})", y=0.995)
+        fig.tight_layout()
+        out_path = os.path.join(output_dir, f"midlevel_{group}_{value_prefix}_curves.png")
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
 
 
 def main():
@@ -617,9 +625,8 @@ def main():
         plot_lift_heatmap(summary,
                           os.path.join(args.output_dir, "midlevel_lift_heatmap.png"),
                           args.bin_epochs)
-        plot_category_curves(summary,
-                             os.path.join(args.output_dir, "midlevel_selected_curves.png"),
-                             args.bin_epochs)
+        plot_group_curve_figures(summary, args.output_dir, args.bin_epochs,
+                                 value_prefix="selected")
         print(f"Saved plots under: {args.output_dir}")
 
 

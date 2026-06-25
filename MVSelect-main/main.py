@@ -186,7 +186,7 @@ def main(args):
         model_dict.update(pretrained_dict)
         model.load_state_dict(model_dict)
     elif args.steps and args.skip_stage1:
-        print('--skip_stage1 set: bypassing stage-1 checkpoint load. '
+        print('--skip_stage1 set: bypassing checkpoint load. '
               'Backbone remains ImageNet-pretrained (MVCNN default); '
               'classifier and selector start from their default init.')
 
@@ -367,11 +367,8 @@ def main(args):
             draw_curve(os.path.join(logdir, 'learning_curve.jpg'), x_epoch, train_loss_s, test_loss_s,
                        train_prec_s, test_prec_s)
             # Save weights every epoch (overwrites). After training completes
-            # `logdir/model.pth` holds the last-epoch weights for BOTH stage 1
-            # (--steps 0) and stage 2 (--steps >0). Previously this was gated
-            # to stage 1 only, which left stage-2 runs without any saved
-            # checkpoint and broke downstream eval (temporal_selection_test,
-            # zero_shot_view_type_test, etc.).
+            # `logdir/model.pth` holds the last-epoch weights for downstream
+            # eval (temporal_selection_test, zero_shot_view_type_test, etc.).
             torch.save(model.state_dict(), os.path.join(logdir, 'model.pth'))
             # Optional per-epoch snapshot for time-resolved downstream analysis
             # (e.g., temporal_selection_test.py --per_epoch_checkpoint).
@@ -616,11 +613,11 @@ if __name__ == '__main__':
                              '(foreshortened + foreshortened-like), '
                              'foreshortened_family_remainder, remainder.')
     parser.add_argument('--train_num_views', type=int, default=None,
-                        help='Stage-1 only (--steps 0): if set to K, each training batch '
+                        help='All-view training mode (--steps 0): if set to K, each training batch '
                              'is restricted to K random views per instance, re-sampled '
                              'every batch. None = use all available views (default).')
     parser.add_argument('--skip_stage1', action='store_true',
-                        help='Stage-2 only (--steps >0): skip loading the stage-1 '
+                        help='Selector training (--steps >0): skip loading an existing '
                              'checkpoint. The backbone remains ImageNet-pretrained '
                              '(MVCNN default); classifier and selector heads start from '
                              'their default init and train jointly with the selector.')

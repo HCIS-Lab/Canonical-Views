@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Zero-shot single-view test of a stage-1 (steps=0) MVCNN classifier.
+"""Single-view view-type test of an MVCNN classifier.
 
-Takes the view-agnostic classifier trained in stage 1 (i.e. `main.py --steps 0`,
-trained on all views per instance via aggregation) and tests it with ONE random
-view per instance, restricted to each of the 5 view-type buckets:
+Takes an MVCNN checkpoint and tests it with ONE random view per instance,
+restricted to each of the 5 view-type buckets:
 
     Expanded, Expanded-like, Foreshortened, Foreshortened-like, Remainder
 
@@ -119,7 +118,7 @@ def build_fpath(dataset):
     return fp
 
 
-def locate_stage1_checkpoint(dataset, arch, freeze_epoch=100):
+def locate_mvcnn_checkpoint(dataset, arch, freeze_epoch=100):
     """Mirror of main.py's checkpoint lookup. Reads
     logs/<dataset>/<arch>[_freeze<N>]_performance.txt and returns the path
     on its 2nd line."""
@@ -127,9 +126,8 @@ def locate_stage1_checkpoint(dataset, arch, freeze_epoch=100):
     perf_path = f"logs/{dataset}/{arch}{suffix}_performance.txt"
     if not os.path.exists(perf_path):
         raise FileNotFoundError(
-            f"Cannot find {perf_path}. Run stage-1 first (`main.py --steps 0 "
-            f"{'--freeze_epoch ' + str(freeze_epoch) if freeze_epoch != 100 else ''}`) "
-            f"so the performance file is written.")
+            f"Cannot find {perf_path}. Pass --checkpoint <path/to/model.pth> "
+            f"or run the matching training first so the performance file is written.")
     with open(perf_path, "r") as f:
         result_str = f.read()
     print(result_str)
@@ -172,7 +170,7 @@ def main():
 
     # --- Model + checkpoint ---
     model = MVCNN(train_set, args.arch, args.aggregation, args.dataset).cuda()
-    ckpt_path = args.checkpoint or locate_stage1_checkpoint(
+    ckpt_path = args.checkpoint or locate_mvcnn_checkpoint(
         args.dataset, args.arch, args.freeze_epoch)
     print(f"Loading checkpoint: {ckpt_path}")
     pretrained = torch.load(ckpt_path, map_location="cuda")
@@ -228,7 +226,7 @@ def main():
     bars = ax.bar(labels, means, yerr=stds, capsize=5, color=palette,
                   edgecolor="black", linewidth=0.5)
     ax.set_ylabel("Accuracy (%)")
-    ax.set_title(f"Stage-1 zero-shot single-view accuracy "
+    ax.set_title(f"MVCNN single-view accuracy "
                  f"(mean ± std over {args.n_runs} runs)")
     ax.set_ylim(0.0, max(100.0, max(m + s for m, s in zip(means, stds)) + 5))
     for bar, m in zip(bars, means):
@@ -254,7 +252,7 @@ def main():
     ax.set_xticks(range(n_classes))
     ax.set_xticklabels(CLASS_NAMES[:n_classes], rotation=60, ha="right", fontsize=7)
     ax.set_xlabel("Class")
-    ax.set_title(f"Stage-1 single-view accuracy by class × view type "
+    ax.set_title(f"MVCNN single-view accuracy by class × view type "
                  f"(mean over {args.n_runs} runs)")
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Accuracy (%)")
@@ -288,7 +286,7 @@ def main():
     for k in range(n_classes, nrows * ncols):
         axes[k // ncols][k % ncols].set_visible(False)
     fig.supylabel("Accuracy (%)", fontsize=10)
-    fig.suptitle(f"Stage-1 single-view accuracy per class "
+    fig.suptitle(f"MVCNN single-view accuracy per class "
                  f"(E=Expanded, E-l=Expanded-like, F=Foreshortened, F-l=Foreshortened-like, R=Remainder)",
                  fontsize=10)
     fig.tight_layout(rect=[0.02, 0, 1, 0.96])

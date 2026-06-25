@@ -182,6 +182,37 @@ Plot raw selected values instead of selected-minus-baseline lift:
 VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
 ```
 
+The wrapper separates the two comparison families into different output
+folders:
+
+```text
+compare/midlevel_shape_freeze_sweep/
+compare/midlevel_shape_selector_limit_sweep/
+```
+
+It also creates grouped comparison curve figures by default:
+
+```text
+selected_axis_visibility_curves.png
+selected_symmetry_part_organization_curves.png
+selected_edge_organization_curves.png
+```
+
+Each grouped figure contains one subplot per metric in that feature family, and
+each subplot overlays the experiments in the current comparison set. For
+example, the freeze-sweep figure overlays `no_freeze`, `freeze_10`, ...,
+`freeze_50`; the selector-limit figure overlays `select_all`,
+`select_expanded`, `select_foreshortened`, `select_foreshortened_remainder`,
+and `select_remainder`.
+
+By default, per-metric heatmaps use `VALUE=lift`, while grouped comparison
+curves use `GROUP_VALUE=selected`. You can change the grouped curves to lift:
+
+```bash
+GROUP_VALUE=lift ./run_midlevel_shape_features_pipeline.sh
+COMPARISON_SET=selector_limit GROUP_VALUE=lift ./run_midlevel_shape_features_pipeline.sh
+```
+
 Plot orientation columns explicitly:
 
 ```bash

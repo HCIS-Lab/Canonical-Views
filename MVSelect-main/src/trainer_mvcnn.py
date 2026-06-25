@@ -167,7 +167,7 @@ class ClassifierTrainer(BaseTrainer):
             B, N = imgs.shape[:2]
             imgs, tgt = imgs.cuda(), tgt.cuda()
 
-            # Stage-1 random-view subsampling: pick K random views per instance,
+            # Random-view subsampling: pick K random views per instance,
             # re-sampled every batch. Saves compute when N is large (e.g.
             # N=114 → K=5). Stage 2 ignores this flag.
             #

@@ -1,7 +1,7 @@
 """Compute cluster-quality metrics from saved feature dumps, per experiment.
 
-Walks every `meta_logs/<rep>/<exp>/<run>/feature_<epoch>.npz` that stage-2
-training has dumped (the same source files `pca_tsne.py` uses) and, per
+Walks every `meta_logs/<rep>/<exp>/<run>/feature_<epoch>.npz` that training
+has dumped (the same source files `pca_tsne.py` uses) and, per
 experiment and per epoch, computes:
 
     silhouette_class   — silhouette score over CLASS labels (cosine distance,
@@ -25,9 +25,9 @@ experiment and per epoch, computes:
                           views of each object instance.
     silhouette_class_all_views_max
                         — class silhouette after max-aggregating all candidate
-                          views of each object instance. This matches stage-1 /
-                          all-view MVCNN pooling, but not the stage-2 selected
-                          subset unless the selected views happen to include
+                          views of each object instance. This matches all-view
+                          MVCNN pooling, but not the selected subset unless the
+                          selected views happen to include
                           all candidate views.
     silhouette_class_selected
                         — class silhouette over the agent-selected views listed

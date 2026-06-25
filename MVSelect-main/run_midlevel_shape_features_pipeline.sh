@@ -4,14 +4,15 @@
 #
 # Defaults:
 #   COMPARISON_SET=freeze       no_freeze vs freeze_10..freeze_50
-#   VALUE=lift                  selected mean - all-candidate-view baseline
+#   VALUE=lift                  per-metric heatmaps use selected - baseline
+#   GROUP_VALUE=selected        grouped comparison curves use selected values
 #   STYLE=heatmap
 #   BIN_EPOCHS=10
 #
 # Examples:
 #   ./run_midlevel_shape_features_pipeline.sh
 #   COMPARISON_SET=selector_limit ./run_midlevel_shape_features_pipeline.sh
-#   VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
+#   GROUP_VALUE=lift ./run_midlevel_shape_features_pipeline.sh
 
 set -uo pipefail
 
@@ -41,6 +42,7 @@ FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-0}"
 LIMIT_IMAGES="${LIMIT_IMAGES:-}"
 
 VALUE="${VALUE:-lift}"          # selected | lift | baseline
+GROUP_VALUE="${GROUP_VALUE:-selected}"  # selected | lift | baseline | none
 STYLE="${STYLE:-heatmap}"       # heatmap | line | both
 BIN_EPOCHS="${BIN_EPOCHS:-10}"
 TITLE_SUFFIX="${TITLE_SUFFIX:-}"
@@ -125,6 +127,7 @@ echo "  COMPARISON = ${COMPARISON_NAME}"
 echo "  DATASET    = ${DATASET}"
 echo "  SPLIT      = ${SPLIT}"
 echo "  VALUE      = ${VALUE}"
+echo "  GROUP_VAL  = ${GROUP_VALUE}"
 echo "  STYLE      = ${STYLE}"
 echo "  BIN_EPOCHS = ${BIN_EPOCHS}"
 echo "  CACHE_CSV  = ${CACHE_CSV}"
@@ -174,6 +177,7 @@ python3 "${ROOT_DIR}/aggregate_midlevel_shape_features.py" \
     --dataset "${DATASET}" \
     --output_dir "${OUTPUT_DIR}" \
     --value "${VALUE}" \
+    --group_value "${GROUP_VALUE}" \
     --style "${STYLE}" \
     --bin_epochs "${BIN_EPOCHS}" \
     --metrics ${METRICS} \

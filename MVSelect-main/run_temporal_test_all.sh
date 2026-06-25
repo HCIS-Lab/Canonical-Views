@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Run temporal_selection_test.py on every stage-2 experiment under meta_logs/.
+# Run temporal_selection_test.py on every selector experiment under meta_logs/.
 #
 # For each meta_logs/<rep>/<exp>/ folder that contains *_selection.json files,
 # parses --freeze_epoch and --arch from the folder name, then invokes the test.
-# Stage-1 experiments (no _selection.json) and folders missing checkpoints are
-# skipped with a warning so the loop keeps going.
+# Experiments without _selection.json and folders missing checkpoints are skipped
+# with a warning so the loop keeps going.
 #
 # Env-var overrides (with defaults):
 #   GPUS=1                    parallel workers (round-robin GPU assignment)
 #   REP_LIST="rgb depth edge" which representation folders to walk
-#   NON_ROLL=1                pass --non_roll (matches your stage-2 training)
+#   NON_ROLL=1                pass --non_roll (matches your selector training)
 #   NON_LIKE=0                pass --non_like
 #   NUM_TRAIN_INSTANCES=25
 #   MAX_EPOCHS=               optional smoke-test cap
@@ -137,7 +137,7 @@ for rep in ${REP_LIST}; do
             continue
         fi
 
-        # Skip if no *_selection.json (stage-1 or incomplete stage-2)
+        # Skip if no *_selection.json
         shopt -s nullglob
         sel_files=( "${exp_dir}"/*_selection.json )
         shopt -u nullglob

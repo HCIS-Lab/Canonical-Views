@@ -63,62 +63,13 @@ You can download the checkpoints at this [link](https://1drv.ms/u/s!AtzsQybTubHf
 
 ## Extensions: training, aggregation, and probing
 
-This fork adds new training options, aggregation/plot outputs, and a zero-shot
-probe of the stage-1 classifier. See the companion repo `human_multiview-main/`
-for VGGT/Pi3/DINOv2-based probes that consume the `selection.json` files
-produced here.
-
-### Stage-1 training with random K views per batch
-
-The default stage-1 trainer (`--steps 0`) aggregates ALL N views (e.g. N=114
-under `--non_roll`) per instance through the MVCNN backbone. With the new
-`--train_num_views K` flag, each training batch is instead restricted to **K
-independent random views per batch item, re-sampled every batch**. This makes
-stage-1 training closer to what stage 2 will encounter, and is ~20× faster
-when going from N=114 → K=5.
-
-```bash
-# Default: train on all available views
-python main.py --epochs 100 --non_roll --steps 0 --num_train_instances 25 --dataset rgb
-
-# New: 5 random views per batch
-python main.py --epochs 100 --non_roll --steps 0 --num_train_instances 25 --dataset rgb \
-  --train_num_views 5
-```
-
-The K-view sampler **overrides dropcam** for stage-1 training (the K selected
-positions are forcibly marked active in `keep_cams`), so you don't need to pass
-`--dropcam 0` alongside it. Evaluation/validation passes still use all views
-regardless of the flag.
-
-### Skip stage 1 — joint training from ImageNet weights
-
-Normally stage 2 (`--steps >0`) loads the stage-1 fine-tuned classifier
-checkpoint via `logs/<dataset>/<arch>_performance.txt`. With `--skip_stage1`,
-this lookup is bypassed: the MVCNN backbone keeps its default ImageNet-pretrained
-weights (`models.resnet18(pretrained=True)` / `models.vit_b_16(pretrained=True)`
-from torchvision), and the classifier + selector heads are trained jointly from
-their default initialization.
-
-```bash
-# Joint train classifier + selector from ImageNet weights — no stage-1 needed
-python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 \
-  --dataset rgb --skip_stage1
-```
-
-Practical notes:
-- The backbone is still ImageNet-pretrained — only the ModelNet fine-tuning of
-  the backbone+classifier (what stage 1 produces) is skipped.
-- The model has more to learn at once (classification + view selection), so
-  initial epochs are usually noisier. You may want a longer schedule or a
-  higher backbone LR (`--base_lr_ratio` > 1) to compensate.
-- `--skip_stage1` and `--resume` are independent: passing `--resume <run>`
-  still loads weights from `logs/<dataset>/<run>/model.pth` and overrides
-  `--skip_stage1`.
+This fork adds selector restrictions, aggregation/plot outputs, and downstream
+probes. See the companion repo `human_multiview-main/` for VGGT/Pi3/DINOv2-based
+probes that consume the `selection.json` files produced here.
 
 ### Restrict selector candidates by view family
 
-Stage-2 MVSelect can be forced to choose additional views only from one view
+MVSelect can be forced to choose additional views only from one view
 family using `--selector_view_limit`. This restriction applies only when the
 selector is making an action during training/testing. The initial view is not
 restricted, and the random/all-view/restricted-view baseline tests still use
@@ -227,9 +178,9 @@ python3 pca_tsne.py --rep_list rgb --num_classes 32 --num_runs 3
 python3 pca_tsne.py --overwrite
 ```
 
-Skips experiments where no `feature_<E>.npz` files were dumped (e.g. stage-1
-runs that didn't save features). Uses cupy + cuml for GPU acceleration; falls
-back gracefully per-experiment if t-SNE fails on a particular epoch.
+Skips experiments where no `feature_<E>.npz` files were dumped. Uses cupy +
+cuml for GPU acceleration; falls back gracefully per-experiment if t-SNE fails
+on a particular epoch.
 
 ### Cluster-quality metrics over training (`compute_cluster_metrics.py` + `aggregate_cluster_metrics.py`)
 
@@ -247,7 +198,7 @@ Eight metrics per epoch:
 | `silhouette_class_selected` | class silhouette after pooling the agent-selected filenames from `*_selection.json`; selected-only, matching `temporal_selection_test.py` | **up** — selected multi-view representation becoming class-discriminative |
 | `silhouette_class_selected_with_init` | class silhouette over the exact classifier input feature: initial view + agent-selected views; requires newer feature dumps with `selected_features` | **up** — classifier-input representation becoming class-discriminative |
 | `silhouette_class_all_views_mean` | class silhouette after reconstructing each object instance and mean-aggregating all candidate views | **up** — all-view object representation becoming class-discriminative |
-| `silhouette_class_all_views_max` | class silhouette after reconstructing each object instance and max-aggregating all candidate views; matches stage-1/all-view MVCNN pooling | **up** — best comparison to all-view MVCNN performance |
+| `silhouette_class_all_views_max` | class silhouette after reconstructing each object instance and max-aggregating all candidate views | **up** — all-view pooled object representation becoming class-discriminative |
 | `silhouette_view` | how cleanly features cluster by 5-bucket view-type label | **down** — features becoming view-invariant |
 | `silhouette_view_index` | how cleanly features cluster by exact view index/camera pose, e.g. 0-113 in the 114-view setting | **down** — features becoming pose-index-invariant |
 | `separability` | `silhouette_class − silhouette_view` | **up** — class-aware AND view-invariant |
@@ -261,7 +212,7 @@ view**, because it is the same source used by `pca_tsne.py`. Therefore
 `silhouette_class` can look numerically small even when the final classifier
 has high accuracy: MVCNN classifies after aggregating multiple selected views,
 not from each single-view feature alone. If you want the selected-view cluster
-metric for stage-2 selector performance, inspect `silhouette_class_selected`.
+metric for selector performance, inspect `silhouette_class_selected`.
 
 For stage-2 selector experiments, note the distinction:
 
@@ -437,8 +388,9 @@ python3 midlevel_shape_features.py \
 # Selector-limit sweep: select_all vs select_expanded/select_foreshortened/...
 COMPARISON_SET=selector_limit ./run_midlevel_shape_features_pipeline.sh
 
-# Plot raw selected values instead of selected-minus-baseline lift
-VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
+# Per-metric heatmaps use VALUE; grouped comparison curves use GROUP_VALUE
+VALUE=selected GROUP_VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
+GROUP_VALUE=lift ./run_midlevel_shape_features_pipeline.sh
 ```
 
 Outputs:
@@ -451,8 +403,20 @@ Outputs:
   over selection files per epoch.
 - `<selection_dir>/midlevel_features/midlevel_lift_heatmap.png` — per-experiment
   selected-minus-baseline heatmap.
+- `<selection_dir>/midlevel_features/midlevel_axis_visibility_selected_curves.png`
+  — selected axis-visibility metrics over epochs.
+- `<selection_dir>/midlevel_features/midlevel_symmetry_part_organization_selected_curves.png`
+  — selected symmetry / part-organization metrics over epochs.
+- `<selection_dir>/midlevel_features/midlevel_edge_organization_selected_curves.png`
+  — selected edge-organization metrics over epochs.
 - `compare/midlevel_shape_<comparison>_sweep/*_heatmap.png` — cross-experiment
   freeze or selector-limit plots.
+- `compare/midlevel_shape_<comparison>_sweep/selected_axis_visibility_curves.png`,
+  `selected_symmetry_part_organization_curves.png`, and
+  `selected_edge_organization_curves.png` — cross-experiment grouped curve
+  figures. With the wrapper defaults, one comparison folder is the freeze sweep
+  (`no_freeze` vs `freeze_10` through `freeze_50`) and the other is the
+  selector-limit sweep (`select_all` vs limited selector families).
 
 ### Temporal selection test — manipulation robustness + margin stability (`temporal_selection_test.py`)
 
@@ -512,22 +476,14 @@ folder name (auto-prepends `meta_logs/<dataset>/`) or the full relative path.
 
 **Checkpoint discovery.** With no `--checkpoint` argument, the script searches
 `logs/<dataset>/` for directories of the form `<exp_basename>_<timestamp>/`
-and picks the most-recent one. (Note: `<arch>_performance.txt` points to the
-**stage-1** backbone, not the final stage-2 classifier needed here — so the
-script does NOT use that file. Pass `--checkpoint` explicitly when you have
-multiple stage-2 runs of the same experiment and want a specific one; the
-script prints the full list of candidates when more than one matches.)
+and picks the most-recent one. Pass `--checkpoint` explicitly when you have
+multiple runs of the same experiment and want a specific one; the script prints
+the full list of candidates when more than one matches.
 
-**Important: stage-2 checkpoint saving was previously skipped.** Before this
-fix, `main.py` only ran `torch.save(model.state_dict(), ...)` when
-`args.steps == 0`, so stage-2 training (including `--skip_stage1 --steps >0`
-joint training) silently never wrote a `model.pth`. The save gate has been
-removed — both stages now write `logdir/model.pth` every epoch (last-epoch
-weights at run completion). **Stage-2 experiments trained before this fix
-will not have a `model.pth` on disk**; re-train (or load whatever weights
-are in memory if the training process is still alive) to use them with the
-temporal test, the zero-shot probe, or any other downstream checkpoint-based
-analysis.
+**Important checkpoint note.** Older training code did not always write a
+`model.pth` for selector runs. Current training writes `logdir/model.pth` every
+epoch, so the file contains the last-epoch weights after completion. Experiments
+trained before that fix may need to be rerun before checkpoint-based analyses.
 
 Outputs (default `<selection_dir>/temporal_test/`):
 - `deviation_rotate.png`, `deviation_jitter.png`, `deviation_rotate_jitter.png`
@@ -673,45 +629,6 @@ The wrapper keeps comparison families separate:
 Use env vars (`COMPARISON_NAME`, `DATASET`, `SMOOTH`, `YMAX_DEV`,
 `YMAX_MARGIN`, `STYLE`) to tune the run without editing the script body.
 
-### Zero-shot single-view classification probe
-
-After stage-1 training (`main.py --steps 0`), MVSelect writes a
-`logs/<dataset>/<arch>_performance.txt` file recording the best run. Stage 2
-auto-loads its checkpoint from there. The new `zero_shot_view_type_test.py`
-script reuses that mechanism to test the stage-1 view-agnostic classifier
-under each view-type bucket independently:
-
-```bash
-# Tests the stage-1 model with ONE random view per instance per bucket type
-python3 zero_shot_view_type_test.py --dataset rgb --non_roll --num_train_instances 25
-
-# More runs for tighter error bars
-python3 zero_shot_view_type_test.py --dataset rgb --non_roll --num_train_instances 25 --n_runs 10
-
-# Direct checkpoint path (override the auto-locator)
-python3 zero_shot_view_type_test.py --dataset rgb --non_roll \
-  --checkpoint logs/rgb/<run_name>/model.pth
-```
-
-The probe loops `restricted_view_test(num_views=1, view_type=...)` for each
-of the 5 buckets, then writes:
-- `bar_overall.png` — 5 bars per view type, mean ± std across `n_runs`.
-- `per_class_heatmap.png` — 32-class × 5-bucket accuracy heatmap.
-- `per_class_grid.png` — small-multiples (1 subplot per class, 5 bars each).
-- `results.csv` — raw per-run, per-class accuracies.
-
-Outputs land in `logs/<dataset>/zero_shot_view_test/` by default. To get
-per-run accuracy from existing `restricted_view_test` callsites, the function
-now accepts an `n_runs=` kwarg (default 10) and returns the per-run accuracy
-array in the 4th element of its return tuple — old callers ignore the extra
-data.
-
-**A note on what's actually zero-shot.** The MVCNN classifier above was
-trained on ModelNet, so calling it "zero-shot" is only true relative to the
-view-type *labels* (the classifier doesn't know which bucket a view is
-from). For a probe that's zero-shot in the stronger sense — a model that has
-never seen ModelNet at all — see the CLIP-based probe below.
-
 ### Zero-shot MOCHI oddity from MVSelect features (`mochi_zero_shot_feature_oddity.py`)
 
 This tests whether a trained MVSelect/MVCNN representation supports the MOCHI
@@ -759,13 +676,13 @@ Outputs land under `compare/mochi_feature_oddity_<comparison>/`:
 
 ### CLIP zero-shot single-view classification probe (`clip_zero_shot_view_type.py`)
 
-Same protocol as the MVCNN probe (one random view per instance per
-view-type bucket, repeated N times), but the classifier is **CLIP** instead
-of the stage-1 MVCNN — CLIP was trained on web image-text pairs and has
-never seen ModelNet, so the result is a genuinely zero-shot reading of view
-informativeness. Classification is done by encoding the image with CLIP's
-image tower, encoding per-class text prompts with CLIP's text tower, and
-taking cosine similarity. Top-1 and top-5 accuracy are both reported.
+This probe samples one random view per instance per view-type bucket, repeated
+N times, and classifies each image with **CLIP**. CLIP was trained on web
+image-text pairs and has never seen ModelNet, so the result is a genuinely
+zero-shot reading of view informativeness. Classification is done by encoding
+the image with CLIP's image tower, encoding per-class text prompts with CLIP's
+text tower, and taking cosine similarity. Top-1 and top-5 accuracy are both
+reported.
 
 ```bash
 # Default: ViT-B/32, 5-template 3D-aware prompt ensemble, 25 instances/class × 5 runs
@@ -790,15 +707,11 @@ Outputs (default `logs/clip_zero_shot_view_test/`):
   analyses (e.g., per-class confusion matrices).
 
 What to look for:
-- If `bar_top1.png` orders view types **the same way** as the MVCNN probe's
-  bar chart — Expanded > Expanded-like > Remainder > Foreshortened >
-  Foreshortened-like (or similar) — that's strong evidence that the
-  ordering is about the views' *intrinsic informativeness for a generic
-  visual classifier*, not about anything ModelNet- or MVCNN-specific.
-- If CLIP gives a different ordering than MVCNN, that's interesting on its
-  own — the discrepancy tells you which buckets MVCNN learned to use that
-  a generic vision-language model wouldn't.
-- Absolute accuracy: don't expect MVCNN-level numbers. CLIP zero-shot on
+- If `bar_top1.png` orders view types as Expanded > Expanded-like > Remainder >
+  Foreshortened > Foreshortened-like (or similar), that supports the claim that
+  expanded-family views are intrinsically more informative for generic visual
+  classification.
+- Absolute accuracy: don't expect supervised ModelNet-level numbers. CLIP zero-shot on
   ModelNet renders is typically 30–50% top-1, 60–80% top-5 — the relative
   ordering matters more than the magnitude.
 
@@ -811,46 +724,7 @@ Prerequisites:
 
 `logs/` and `meta_logs/` directories already include a `freeze_<N>_` prefix
 in the experiment folder name when `--freeze_epoch != 100`, so per-run
-training artifacts are segregated automatically. Two additional files needed
-freeze-aware names to avoid silent overwrites — both are now handled:
-
-- **`logs/<dataset>/<arch>_performance.txt`** → becomes
-  `<arch>_freeze<N>_performance.txt` when `--freeze_epoch != 100`. This file
-  records the best stage-1 run, used by both stage-2 training (`main.py
-  --steps >0`) and `zero_shot_view_type_test.py` to locate the checkpoint.
-  Before this fix, multiple stage-1 runs with different freeze values would
-  silently overwrite each other's pointer.
-- **`zero_shot_view_type_test.py` output dir** → default
-  `logs/<dataset>/zero_shot_view_test/` becomes
-  `zero_shot_view_test_freeze<N>/`. Pass `--freeze_epoch <N>` to the script
-  to match the stage-1 run you want to probe.
-
-Example: train two stage-1 backbones (default freeze + `freeze_epoch=80`),
-then probe each:
-
-```bash
-# Stage 1 baseline (freeze_epoch=100 default = never freeze)
-python main.py --epochs 100 --non_roll --steps 0 --num_train_instances 25 --dataset rgb
-# → writes logs/rgb/resnet18_performance.txt
-
-# Stage 1 with backbone frozen after epoch 80
-python main.py --epochs 100 --non_roll --steps 0 --num_train_instances 25 --dataset rgb \
-  --freeze_epoch 80
-# → writes logs/rgb/resnet18_freeze80_performance.txt (does NOT clobber the above)
-
-# Probe each separately
-python zero_shot_view_type_test.py --dataset rgb --non_roll --num_train_instances 25
-# → outputs to logs/rgb/zero_shot_view_test/
-
-python zero_shot_view_type_test.py --dataset rgb --non_roll --num_train_instances 25 \
-  --freeze_epoch 80
-# → outputs to logs/rgb/zero_shot_view_test_freeze80/
-
-# Stage 2 on top of each — auto-loads the matching performance.txt
-python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 --dataset rgb
-python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 --dataset rgb \
-  --freeze_epoch 80
-```
+training artifacts are segregated automatically.
 
 For `aggregate_meta_json.py`: no changes needed — plots are written inside
 each `meta_logs/<rep>/freeze_<N>_<arch>...` folder, which already segregates
@@ -859,9 +733,9 @@ them by the dir name.
 For the `human_multiview-main/` probes (agent vs random, single-view
 confidence, pair-confidence control): the `--selection_dir` you pass picks
 which agent run to evaluate, but the default `--output_dir` only encodes
-`--selected_view_type`. If you run probes on **two stage-2 agents with
-different `--freeze_epoch`**, pass `--output_dir` explicitly per run so the
-two don't collide, e.g.:
+`--selected_view_type`. If you run probes on multiple agents with different
+`--freeze_epoch`, pass `--output_dir` explicitly per run so the outputs don't
+collide, e.g.:
 
 ```bash
 ./scripts/run_pipeline.sh OUTPUT_DIR=results/views/agent_default
@@ -873,17 +747,13 @@ two don't collide, e.g.:
 
 ### Recommended pipeline
 
-1. **Train stage 1 (view-agnostic classifier).** Either all-views or with
-   `--train_num_views 5` if you want a backbone trained closer to the stage-2
-   sampling regime.
-2. **Train stage 2 (view selector).** `python main.py --epochs 100 --non_roll
-   --steps 5 --num_train_instances 25 --dataset rgb`. This auto-loads the
-   stage-1 checkpoint via `<arch>_performance.txt`.
-3. **Aggregate training logs.** `python aggregate_meta_json.py` for the
+1. **Train MVSelect agents.** Example:
+   `python main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 --dataset rgb`.
+2. **Aggregate training logs.** `python aggregate_meta_json.py` for the
    family-ratio / lift / per-class-accuracy plots above.
-4. **Probe view-type informativeness.** `python zero_shot_view_type_test.py`
-   for the MVCNN classifier's per-bucket accuracy.
-5. **Probe model uncertainty on agent selections.** In `human_multiview-main/`:
+3. **Probe view-type informativeness.** `python clip_zero_shot_view_type.py`
+   for CLIP top-1/top-5 per-bucket accuracy.
+4. **Probe model uncertainty on agent selections.** In `human_multiview-main/`:
    `./scripts/run_pipeline.sh` for the VGGT/DINOv2 agent-vs-random
    comparison, `./scripts/run_view_type_single_view.sh` for VGGT's
    single-view depth confidence per bucket, `./scripts/run_pair_confidence_control.sh`

@@ -32,6 +32,27 @@ DEFAULT_METRICS = [
     "edge_entropy",
 ]
 
+METRIC_GROUPS = {
+    "axis_visibility": [
+        "ellipse_orientation_deg",
+        "ellipse_aspect_ratio",
+        "skeleton_elongation",
+        "skeleton_length_norm",
+    ],
+    "symmetry_part_organization": [
+        "bilateral_symmetry",
+        "medial_axis_symmetry",
+        "skeleton_endpoint_count",
+        "skeleton_branchpoint_count",
+        "skeleton_branch_density",
+    ],
+    "edge_organization": [
+        "dominant_edge_orientation_deg",
+        "edge_entropy",
+        "edge_anisotropy",
+    ],
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -45,6 +66,10 @@ def parse_args():
     p.add_argument("--value", default="lift",
                    choices=["selected", "lift", "baseline"],
                    help="Plot selected_<metric>, lift_<metric>, or baseline_<metric>.")
+    p.add_argument("--group_value", default="selected",
+                   choices=["selected", "lift", "baseline", "none"],
+                   help="Value prefix for the grouped comparison curve figures. "
+                        "Use 'none' to disable group figures.")
     p.add_argument("--style", default="heatmap",
                    choices=["heatmap", "line", "both"])
     p.add_argument("--bin_epochs", type=int, default=10,
@@ -236,6 +261,56 @@ def plot_line(df, metric, args):
     print(f"Saved: {out}")
 
 
+def plot_group_curves(df, group, metrics, value_prefix, args):
+    available = [m for m in metrics if f"{value_prefix}_{m}" in df.columns]
+    if not available:
+        return
+    fig, axes = plt.subplots(len(available), 1,
+                             figsize=(9, max(3, 2.35 * len(available))),
+                             sharex=True)
+    if len(available) == 1:
+        axes = [axes]
+
+    plotted_any = False
+    for ax, metric in zip(axes, available):
+        col = f"{value_prefix}_{metric}"
+        plotted = 0
+        for label, block in df.groupby("experiment", sort=False):
+            block = block.sort_values("epoch")
+            centers, values, _ = bin_epoch_series(
+                block["epoch"].to_numpy(),
+                pd.to_numeric(block[col], errors="coerce").to_numpy(),
+                args.bin_epochs,
+            )
+            if np.isfinite(values).any():
+                ax.plot(centers, values, "o-", lw=1.4, ms=3, label=label)
+                plotted += 1
+        if value_prefix == "lift":
+            ax.axhline(0, color="gray", ls="--", alpha=0.5)
+        ax.set_ylabel(metric, fontsize=8)
+        ax.grid(alpha=0.3)
+        if plotted:
+            plotted_any = True
+    if not plotted_any:
+        plt.close(fig)
+        return
+
+    axes[-1].set_xlabel("Training epoch")
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=min(4, len(labels)),
+                   fontsize=8, bbox_to_anchor=(0.5, 0.995))
+    title = f"{group.replace('_', ' ')} ({value_prefix})"
+    if args.title_suffix:
+        title += f"\n{args.title_suffix}"
+    fig.suptitle(title, y=0.94 if handles else 0.995)
+    fig.tight_layout(rect=(0, 0, 1, 0.91 if handles else 0.97))
+    out = os.path.join(args.output_dir, f"{value_prefix}_{group}_curves.png")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {out}")
+
+
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -253,6 +328,10 @@ def main():
             plot_heatmap(df, metric, args)
         if args.style in ("line", "both"):
             plot_line(df, metric, args)
+
+    if args.group_value != "none":
+        for group, metrics in METRIC_GROUPS.items():
+            plot_group_curves(df, group, metrics, args.group_value, args)
 
     print("Done.")
 

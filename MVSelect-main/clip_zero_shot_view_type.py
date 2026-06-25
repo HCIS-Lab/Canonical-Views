@@ -1,8 +1,8 @@
 """True zero-shot single-view classification probe via CLIP.
 
 Parallel to `zero_shot_view_type_test.py`, but uses CLIP (which has never
-seen ModelNet) instead of the MVCNN stage-1 classifier (which was trained
-on ModelNet). This makes the probe a *genuinely* zero-shot reading of "how
+seen ModelNet) instead of a supervised MVCNN classifier. This makes the probe
+a *genuinely* zero-shot reading of "how
 class-discriminable is each view type to a vision model with no
 ModelNet-specific training".
 
