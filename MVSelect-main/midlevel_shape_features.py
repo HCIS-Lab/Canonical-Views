@@ -28,6 +28,7 @@ from scipy import ndimage
 
 
 DEFAULT_DATA_ROOT = "/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/modelnet_32_60_1_23"
+CACHE_VERSION = "v2"
 
 VIEW_BUCKETS = [
     "expanded",
@@ -41,6 +42,8 @@ METRIC_GROUPS = {
     "axis_visibility": [
         "ellipse_orientation_deg",
         "ellipse_aspect_ratio",
+        "bbox_aspect_ratio",
+        "skeleton_length_px",
         "skeleton_elongation",
         "skeleton_length_norm",
     ],
@@ -55,18 +58,11 @@ METRIC_GROUPS = {
         "edge_anisotropy",
         "edge_entropy",
         "dominant_edge_orientation_deg",
+        "edge_pixel_count",
     ],
 }
 
-PLOT_METRICS = [
-    "ellipse_aspect_ratio",
-    "skeleton_elongation",
-    "bilateral_symmetry",
-    "medial_axis_symmetry",
-    "skeleton_branch_density",
-    "edge_anisotropy",
-    "edge_entropy",
-]
+PLOT_METRICS = sorted({m for metrics in METRIC_GROUPS.values() for m in metrics})
 
 ORIENTATION_METRICS = {
     "ellipse_orientation_deg",
@@ -84,7 +80,7 @@ def parse_args():
     p.add_argument("--split", default="test")
     p.add_argument("--cache_csv", default=None,
                    help="Per-view feature cache. Default: "
-                        "cache/midlevel_features_<split>.csv")
+                        f"cache/midlevel_features_{CACHE_VERSION}_<split>.csv")
     p.add_argument("--output_dir", default=None,
                    help="Default: <selection_dir>/midlevel_features, or "
                         "logs/midlevel_features if no selection_dir.")
@@ -302,14 +298,15 @@ def skeleton_features(mask):
     branchpoints = int(np.logical_and(skel, neighbor_count >= 3).sum())
     bbox = safe_bbox(mask)
     if bbox is None:
-        major_bbox = math.sqrt(area)
+        minor_bbox = math.sqrt(area)
     else:
         y0, y1, x0, x1 = bbox
-        major_bbox = max(y1 - y0, x1 - x0, 1)
+        h, w = max(y1 - y0, 1), max(x1 - x0, 1)
+        minor_bbox = max(min(h, w), 1)
     return {
         "skeleton_length_px": skel_len,
         "skeleton_length_norm": float(skel_len / math.sqrt(area)),
-        "skeleton_elongation": float(skel_len / major_bbox),
+        "skeleton_elongation": float(skel_len / minor_bbox),
         "skeleton_endpoint_count": endpoints,
         "skeleton_branchpoint_count": branchpoints,
         "skeleton_branch_density": float(branchpoints / max(skel_len, 1)),
@@ -362,6 +359,18 @@ def mean_metric(series, metric):
     return float(np.mean(values))
 
 
+def std_metric(series, metric):
+    values = pd.to_numeric(series, errors="coerce").dropna().to_numpy(dtype=float)
+    if values.size == 0:
+        return np.nan
+    if metric in ORIENTATION_METRICS:
+        theta = np.deg2rad(values)
+        r = np.abs(np.mean(np.exp(2j * theta)))
+        r = min(max(float(r), 1e-12), 1.0)
+        return float(np.rad2deg(0.5 * np.sqrt(-2.0 * np.log(r))))
+    return float(np.std(values, ddof=0))
+
+
 def metric_delta(selected, baseline, metric):
     if pd.isna(selected) or pd.isna(baseline):
         return np.nan
@@ -369,6 +378,13 @@ def metric_delta(selected, baseline, metric):
         # Shortest signed axial angular difference in [-90, 90).
         return float(((selected - baseline + 90.0) % 180.0) - 90.0)
     return float(selected - baseline)
+
+
+def metric_effect(selected, baseline, baseline_std, metric):
+    delta = metric_delta(selected, baseline, metric)
+    if pd.isna(delta) or pd.isna(baseline_std) or baseline_std <= 1e-12:
+        return np.nan
+    return float(delta / baseline_std)
 
 
 def compute_one(path):
@@ -501,10 +517,18 @@ def aggregate_selected_features(view_df, selection_dir):
                 matched_baseline = mean_metric(baseline_block[metric], metric)
                 if pd.isna(matched_baseline):
                     matched_baseline = global_baseline.get(metric, np.nan)
+                baseline_std = std_metric(baseline_block[metric], metric)
                 row[f"baseline_{metric}"] = float(matched_baseline)
+                row[f"baseline_std_{metric}"] = float(baseline_std) if not pd.isna(baseline_std) else np.nan
                 row[f"lift_{metric}"] = metric_delta(
                     row[f"selected_{metric}"],
                     row[f"baseline_{metric}"],
+                    metric,
+                )
+                row[f"effect_{metric}"] = metric_effect(
+                    row[f"selected_{metric}"],
+                    row[f"baseline_{metric}"],
+                    row[f"baseline_std_{metric}"],
                     metric,
                 )
             rows.append(row)
@@ -512,8 +536,32 @@ def aggregate_selected_features(view_df, selection_dir):
     raw = pd.DataFrame(rows)
     if raw.empty:
         return raw, raw
-    summary = raw.groupby("epoch", as_index=False).mean(numeric_only=True)
+    summary = summarize_by_epoch(raw)
     return raw, summary
+
+
+def metric_name_from_column(col):
+    for prefix in ("selected_", "baseline_std_", "baseline_", "lift_", "effect_"):
+        if col.startswith(prefix):
+            return col[len(prefix):], prefix.rstrip("_")
+    return None, None
+
+
+def summarize_by_epoch(df):
+    rows = []
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    for epoch, block in df.groupby("epoch", sort=True):
+        row = {"epoch": int(epoch)}
+        for col in numeric_cols:
+            if col == "epoch":
+                continue
+            metric, prefix = metric_name_from_column(col)
+            if metric in ORIENTATION_METRICS and prefix in {"selected", "baseline"}:
+                row[col] = mean_metric(block[col], metric)
+            else:
+                row[col] = pd.to_numeric(block[col], errors="coerce").mean()
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def bin_epoch_df(df, n_bins):
@@ -526,27 +574,40 @@ def bin_epoch_df(df, n_bins):
         block = df[(df["epoch"] >= lo) & (df["epoch"] < hi)]
         if block.empty:
             continue
-        row = block.mean(numeric_only=True).to_dict()
+        row = {}
+        for col in block.select_dtypes(include=[np.number]).columns:
+            metric, prefix = metric_name_from_column(col)
+            if metric in ORIENTATION_METRICS and prefix in {"selected", "baseline"}:
+                row[col] = mean_metric(block[col], metric)
+            else:
+                row[col] = pd.to_numeric(block[col], errors="coerce").mean()
         row["epoch"] = (lo + hi) / 2.0
         row["epoch_bin"] = f"{int(math.ceil(lo + 0.5))}-{int(math.floor(hi - 0.5))}"
         rows.append(row)
     return pd.DataFrame(rows)
 
 
-def plot_lift_heatmap(summary, out_path, bin_epochs):
+def plot_value_heatmap(summary, out_path, bin_epochs, value_prefix):
     binned = bin_epoch_df(summary, bin_epochs)
-    metrics = [m for m in PLOT_METRICS if f"lift_{m}" in binned.columns]
+    metrics = [m for m in PLOT_METRICS if f"{value_prefix}_{m}" in binned.columns]
     if not metrics:
         return
-    matrix = np.vstack([binned[f"lift_{m}"].to_numpy(dtype=float) for m in metrics])
+    matrix = np.vstack([binned[f"{value_prefix}_{m}"].to_numpy(dtype=float) for m in metrics])
     finite = matrix[np.isfinite(matrix)]
     if finite.size == 0:
         return
-    vmax = float(np.nanmax(np.abs(finite)))
+    if value_prefix in {"lift", "effect"}:
+        vmax = float(np.nanmax(np.abs(finite)))
+        vmin = -vmax
+        cmap = "RdBu_r"
+    else:
+        vmin = float(np.nanmin(finite))
+        vmax = float(np.nanmax(finite))
+        cmap = "viridis"
     fig, ax = plt.subplots(figsize=(max(8, 0.45 * matrix.shape[1] + 2),
                                     max(4, 0.45 * len(metrics) + 1)))
-    im = ax.imshow(matrix, aspect="auto", cmap="RdBu_r",
-                   vmin=-vmax, vmax=vmax, interpolation="nearest")
+    im = ax.imshow(matrix, aspect="auto", cmap=cmap,
+                   vmin=vmin, vmax=vmax, interpolation="nearest")
     ax.set_yticks(range(len(metrics)))
     ax.set_yticklabels(metrics, fontsize=8)
     labels = binned["epoch_bin"].tolist() if "epoch_bin" in binned.columns else [
@@ -555,9 +616,14 @@ def plot_lift_heatmap(summary, out_path, bin_epochs):
     ax.set_xticks(range(len(labels)))
     ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
     ax.set_xlabel("Training epoch")
-    ax.set_title("Selected-view mid-level feature lift vs all candidate views")
+    ax.set_title(f"Selected-view mid-level feature {value_prefix}")
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("Selected mean - all-view baseline")
+    if value_prefix == "effect":
+        cbar.set_label("(selected mean - baseline mean) / baseline std")
+    elif value_prefix == "lift":
+        cbar.set_label("Selected mean - all-view baseline")
+    else:
+        cbar.set_label(value_prefix)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -580,7 +646,7 @@ def plot_group_curve_figures(summary, output_dir, bin_epochs, value_prefix="sele
                 continue
             ax.plot(binned["epoch"], binned[col], marker="o", ms=3, lw=1.5,
                     color="#1f77b4")
-            if value_prefix == "lift":
+            if value_prefix in {"lift", "effect"}:
                 ax.axhline(0, color="gray", ls="--", alpha=0.5)
             ax.set_ylabel(metric, fontsize=8)
             ax.grid(alpha=0.3)
@@ -592,13 +658,40 @@ def plot_group_curve_figures(summary, output_dir, bin_epochs, value_prefix="sele
         plt.close(fig)
 
 
+def write_metric_range_diagnostics(view_df, summary, out_path):
+    rows = []
+    metrics = [m for m in PLOT_METRICS if m in view_df.columns]
+    for metric in metrics:
+        row = {"metric": metric}
+        raw = pd.to_numeric(view_df[metric], errors="coerce").dropna()
+        if len(raw):
+            row.update({
+                "per_view_min": float(raw.min()),
+                "per_view_max": float(raw.max()),
+                "per_view_std": std_metric(raw, metric),
+            })
+        for prefix in ("selected", "lift", "effect"):
+            col = f"{prefix}_{metric}"
+            if col not in summary.columns:
+                continue
+            vals = pd.to_numeric(summary[col], errors="coerce").dropna()
+            if len(vals):
+                row.update({
+                    f"{prefix}_epoch_min": float(vals.min()),
+                    f"{prefix}_epoch_max": float(vals.max()),
+                    f"{prefix}_epoch_std": std_metric(vals, metric) if prefix == "selected" else float(vals.std(ddof=0)),
+                })
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(out_path, index=False)
+
+
 def main():
     args = parse_args()
     if args.cache_csv is None:
         args.cache_csv = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "cache",
-            f"midlevel_features_{args.split}.csv",
+            f"midlevel_features_{CACHE_VERSION}_{args.split}.csv",
         )
     if args.output_dir is None:
         if args.selection_dir:
@@ -622,11 +715,23 @@ def main():
     print(f"Saved: {raw_path}")
     print(f"Saved: {summary_path}")
     if not summary.empty:
-        plot_lift_heatmap(summary,
-                          os.path.join(args.output_dir, "midlevel_lift_heatmap.png"),
-                          args.bin_epochs)
+        range_path = os.path.join(args.output_dir, "midlevel_metric_ranges.csv")
+        write_metric_range_diagnostics(view_df, summary, range_path)
+        print(f"Saved: {range_path}")
+        plot_value_heatmap(summary,
+                           os.path.join(args.output_dir, "midlevel_lift_heatmap.png"),
+                           args.bin_epochs,
+                           value_prefix="lift")
+        plot_value_heatmap(summary,
+                           os.path.join(args.output_dir, "midlevel_effect_heatmap.png"),
+                           args.bin_epochs,
+                           value_prefix="effect")
         plot_group_curve_figures(summary, args.output_dir, args.bin_epochs,
                                  value_prefix="selected")
+        plot_group_curve_figures(summary, args.output_dir, args.bin_epochs,
+                                 value_prefix="lift")
+        plot_group_curve_figures(summary, args.output_dir, args.bin_epochs,
+                                 value_prefix="effect")
         print(f"Saved plots under: {args.output_dir}")
 
 

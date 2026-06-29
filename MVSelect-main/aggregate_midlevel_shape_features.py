@@ -22,14 +22,21 @@ import pandas as pd
 
 
 DEFAULT_METRICS = [
+    "ellipse_orientation_deg",
     "ellipse_aspect_ratio",
+    "bbox_aspect_ratio",
+    "skeleton_length_px",
     "skeleton_elongation",
     "skeleton_length_norm",
     "bilateral_symmetry",
     "medial_axis_symmetry",
+    "skeleton_endpoint_count",
+    "skeleton_branchpoint_count",
     "skeleton_branch_density",
+    "dominant_edge_orientation_deg",
     "edge_anisotropy",
     "edge_entropy",
+    "edge_pixel_count",
 ]
 
 METRIC_GROUPS = {
@@ -53,6 +60,11 @@ METRIC_GROUPS = {
     ],
 }
 
+ORIENTATION_METRICS = {
+    "ellipse_orientation_deg",
+    "dominant_edge_orientation_deg",
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -63,12 +75,15 @@ def parse_args():
                    help="Resolve bare experiment names under meta_logs/<dataset>/.")
     p.add_argument("--output_dir", required=True)
     p.add_argument("--metrics", nargs="+", default=DEFAULT_METRICS)
-    p.add_argument("--value", default="lift",
-                   choices=["selected", "lift", "baseline"],
-                   help="Plot selected_<metric>, lift_<metric>, or baseline_<metric>.")
-    p.add_argument("--group_value", default="selected",
-                   choices=["selected", "lift", "baseline", "none"],
+    p.add_argument("--value", default="effect",
+                   choices=["selected", "lift", "baseline", "effect"],
+                   help="Plot selected_<metric>, lift_<metric>, baseline_<metric>, "
+                        "or effect_<metric>.")
+    p.add_argument("--group_value", default="all",
+                   choices=["selected", "lift", "baseline", "effect", "both", "all", "none"],
                    help="Value prefix for the grouped comparison curve figures. "
+                        "'both' writes selected and lift; 'all' writes selected, "
+                        "lift, and effect. "
                         "Use 'none' to disable group figures.")
     p.add_argument("--style", default="heatmap",
                    choices=["heatmap", "line", "both"])
@@ -111,7 +126,18 @@ def parse_exp_spec(spec, dataset):
     return chosen, label, candidates
 
 
-def bin_epoch_series(epoch_values, y_values, n_bins):
+def _mean_values(values, metric=None, value_prefix=None):
+    values = pd.to_numeric(pd.Series(values), errors="coerce").dropna().to_numpy(dtype=float)
+    if values.size == 0:
+        return np.nan
+    if metric in ORIENTATION_METRICS and value_prefix in {"selected", "baseline"}:
+        theta = np.deg2rad(values)
+        z = np.mean(np.exp(2j * theta))
+        return float((0.5 * np.rad2deg(np.angle(z))) % 180.0)
+    return float(np.nanmean(values))
+
+
+def bin_epoch_series(epoch_values, y_values, n_bins, metric=None, value_prefix=None):
     if n_bins <= 0 or len(epoch_values) <= n_bins:
         labels = [str(int(e)) for e in epoch_values]
         return np.asarray(epoch_values, dtype=float), np.asarray(y_values, dtype=float), labels
@@ -125,7 +151,7 @@ def bin_epoch_series(epoch_values, y_values, n_bins):
         if not mask.any():
             continue
         centers.append(float((lo + hi) / 2.0))
-        bvals.append(float(np.nanmean(values[mask])))
+        bvals.append(_mean_values(values[mask], metric, value_prefix))
         labels.append(f"{int(np.ceil(lo + 0.5))}-{int(np.floor(hi - 0.5))}")
     return np.asarray(centers), np.asarray(bvals), labels
 
@@ -164,6 +190,8 @@ def make_matrix(df, metric, value_prefix, bin_epochs):
             block["epoch"].to_numpy(),
             pd.to_numeric(block[col], errors="coerce").to_numpy(),
             bin_epochs,
+            metric=metric,
+            value_prefix=value_prefix,
         )
         if common_centers is None:
             common_centers = centers
@@ -189,7 +217,7 @@ def plot_heatmap(df, metric, args):
     if finite.size == 0:
         return
 
-    if args.value == "lift":
+    if args.value in {"lift", "effect"}:
         vmax = float(np.nanmax(np.abs(finite)))
         vmin = -vmax
         cmap = "RdBu_r"
@@ -212,7 +240,7 @@ def plot_heatmap(df, metric, args):
     ax.set_title(title)
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label(f"{args.value}_{metric}")
-    if args.value == "lift":
+    if args.value in {"lift", "effect"}:
         ticks = sorted({vmin, 0.0, vmax})
         cbar.set_ticks(ticks)
         cbar.set_ticklabels([f"{t:+.3f}" if t != 0 else "0" for t in ticks])
@@ -238,13 +266,15 @@ def plot_line(df, metric, args):
             block["epoch"].to_numpy(),
             pd.to_numeric(block[col], errors="coerce").to_numpy(),
             args.bin_epochs,
+            metric=metric,
+            value_prefix=args.value,
         )
         ax.plot(centers, values, "o-", lw=1.5, ms=3, label=label)
         plotted += 1
     if plotted == 0:
         plt.close(fig)
         return
-    if args.value == "lift":
+    if args.value in {"lift", "effect"}:
         ax.axhline(0, color="gray", ls="--", alpha=0.5)
     ax.set_xlabel("Training epoch")
     ax.set_ylabel(col)
@@ -281,11 +311,13 @@ def plot_group_curves(df, group, metrics, value_prefix, args):
                 block["epoch"].to_numpy(),
                 pd.to_numeric(block[col], errors="coerce").to_numpy(),
                 args.bin_epochs,
+                metric=metric,
+                value_prefix=value_prefix,
             )
             if np.isfinite(values).any():
                 ax.plot(centers, values, "o-", lw=1.4, ms=3, label=label)
                 plotted += 1
-        if value_prefix == "lift":
+        if value_prefix in {"lift", "effect"}:
             ax.axhline(0, color="gray", ls="--", alpha=0.5)
         ax.set_ylabel(metric, fontsize=8)
         ax.grid(alpha=0.3)
@@ -330,8 +362,15 @@ def main():
             plot_line(df, metric, args)
 
     if args.group_value != "none":
-        for group, metrics in METRIC_GROUPS.items():
-            plot_group_curves(df, group, metrics, args.group_value, args)
+        if args.group_value == "both":
+            group_values = ["selected", "lift"]
+        elif args.group_value == "all":
+            group_values = ["selected", "lift", "effect"]
+        else:
+            group_values = [args.group_value]
+        for value_prefix in group_values:
+            for group, metrics in METRIC_GROUPS.items():
+                plot_group_curves(df, group, metrics, value_prefix, args)
 
     print("Done.")
 

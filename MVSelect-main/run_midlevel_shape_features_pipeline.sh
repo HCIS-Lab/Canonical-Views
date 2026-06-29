@@ -4,8 +4,8 @@
 #
 # Defaults:
 #   COMPARISON_SET=freeze       no_freeze vs freeze_10..freeze_50
-#   VALUE=lift                  per-metric heatmaps use selected - baseline
-#   GROUP_VALUE=selected        grouped comparison curves use selected values
+#   VALUE=effect                per-metric heatmaps use standardized lift
+#   GROUP_VALUE=all             grouped curves write selected + lift + effect
 #   STYLE=heatmap
 #   BIN_EPOCHS=10
 #
@@ -37,16 +37,16 @@ fi
 DATASET="${DATASET:-rgb}"
 SPLIT="${SPLIT:-test}"
 DATA_ROOT="${DATA_ROOT:-/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/modelnet_32_60_1_23}"
-CACHE_CSV="${CACHE_CSV:-${ROOT_DIR}/cache/midlevel_features_${SPLIT}.csv}"
+CACHE_CSV="${CACHE_CSV:-${ROOT_DIR}/cache/midlevel_features_v2_${SPLIT}.csv}"
 FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-0}"
 LIMIT_IMAGES="${LIMIT_IMAGES:-}"
 
-VALUE="${VALUE:-lift}"          # selected | lift | baseline
-GROUP_VALUE="${GROUP_VALUE:-selected}"  # selected | lift | baseline | none
+VALUE="${VALUE:-effect}"        # selected | lift | baseline | effect
+GROUP_VALUE="${GROUP_VALUE:-all}"       # selected | lift | baseline | effect | both | all | none
 STYLE="${STYLE:-heatmap}"       # heatmap | line | both
 BIN_EPOCHS="${BIN_EPOCHS:-10}"
 TITLE_SUFFIX="${TITLE_SUFFIX:-}"
-METRICS="${METRICS:-ellipse_aspect_ratio skeleton_elongation skeleton_length_norm bilateral_symmetry medial_axis_symmetry skeleton_branch_density edge_anisotropy edge_entropy}"
+METRICS="${METRICS:-ellipse_orientation_deg ellipse_aspect_ratio bbox_aspect_ratio skeleton_length_px skeleton_elongation skeleton_length_norm bilateral_symmetry medial_axis_symmetry skeleton_endpoint_count skeleton_branchpoint_count skeleton_branch_density dominant_edge_orientation_deg edge_anisotropy edge_entropy edge_pixel_count}"
 
 FREEZE_EXPS=(
     "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"

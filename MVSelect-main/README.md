@@ -360,7 +360,7 @@ Orientation columns use axial circular averaging in the epoch summaries, so
 heatmaps emphasize scalar "amount/organization" metrics; orientation columns
 remain in the CSVs for more targeted inspection.
 
-The default comparison value is `lift`:
+The core comparison value is `lift`:
 
 ```text
 lift_metric = mean(metric on selected views at epoch t)
@@ -371,6 +371,16 @@ So a positive lift means the selector is using views with more of that visible
 mid-level structure than the same objects' all-view baseline. This avoids
 confusing "some object classes are more elongated/symmetric" with "the selector
 prefers views that expose elongation/symmetry."
+
+For cross-metric plots, the wrapper defaults to `VALUE=effect`, a standardized
+lift:
+
+```text
+effect_metric = lift_metric / std(metric over all candidate views of the same object instances)
+```
+
+This is easier to compare across metrics whose raw units have very different
+ranges.
 
 Commands:
 
@@ -388,8 +398,10 @@ python3 midlevel_shape_features.py \
 # Selector-limit sweep: select_all vs select_expanded/select_foreshortened/...
 COMPARISON_SET=selector_limit ./run_midlevel_shape_features_pipeline.sh
 
-# Per-metric heatmaps use VALUE; grouped comparison curves use GROUP_VALUE
-VALUE=selected GROUP_VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
+# Per-metric heatmaps use VALUE; grouped comparison curves use GROUP_VALUE.
+# Defaults: VALUE=effect, GROUP_VALUE=all.
+VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
+GROUP_VALUE=selected ./run_midlevel_shape_features_pipeline.sh
 GROUP_VALUE=lift ./run_midlevel_shape_features_pipeline.sh
 ```
 
@@ -401,8 +413,12 @@ Outputs:
   row per selection file and epoch.
 - `<selection_dir>/midlevel_features/selected_midlevel_summary.csv` — averaged
   over selection files per epoch.
+- `<selection_dir>/midlevel_features/midlevel_metric_ranges.csv` — per-view raw
+  ranges versus epoch-level selected/lift/effect ranges for sanity checking.
 - `<selection_dir>/midlevel_features/midlevel_lift_heatmap.png` — per-experiment
   selected-minus-baseline heatmap.
+- `<selection_dir>/midlevel_features/midlevel_effect_heatmap.png` — per-experiment
+  standardized lift heatmap.
 - `<selection_dir>/midlevel_features/midlevel_axis_visibility_selected_curves.png`
   — selected axis-visibility metrics over epochs.
 - `<selection_dir>/midlevel_features/midlevel_symmetry_part_organization_selected_curves.png`
@@ -410,13 +426,24 @@ Outputs:
 - `<selection_dir>/midlevel_features/midlevel_edge_organization_selected_curves.png`
   — selected edge-organization metrics over epochs.
 - `compare/midlevel_shape_<comparison>_sweep/*_heatmap.png` — cross-experiment
-  freeze or selector-limit plots.
+  freeze or selector-limit plots. With defaults, these are standardized
+  `effect_<metric>_heatmap.png` files.
 - `compare/midlevel_shape_<comparison>_sweep/selected_axis_visibility_curves.png`,
   `selected_symmetry_part_organization_curves.png`, and
   `selected_edge_organization_curves.png` — cross-experiment grouped curve
-  figures. With the wrapper defaults, one comparison folder is the freeze sweep
-  (`no_freeze` vs `freeze_10` through `freeze_50`) and the other is the
-  selector-limit sweep (`select_all` vs limited selector families).
+  figures.
+- `compare/midlevel_shape_<comparison>_sweep/lift_axis_visibility_curves.png`,
+  `lift_symmetry_part_organization_curves.png`, and
+  `lift_edge_organization_curves.png` — the same grouped comparisons after
+  subtracting the instance-matched all-view baseline.
+- `compare/midlevel_shape_<comparison>_sweep/effect_axis_visibility_curves.png`,
+  `effect_symmetry_part_organization_curves.png`, and
+  `effect_edge_organization_curves.png` — the same grouped comparisons in
+  standardized effect-size units.
+
+With the wrapper defaults, one comparison folder is the freeze sweep
+(`no_freeze` vs `freeze_10` through `freeze_50`) and the other is the
+selector-limit sweep (`select_all` vs limited selector families).
 
 ### Temporal selection test — manipulation robustness + margin stability (`temporal_selection_test.py`)
 
