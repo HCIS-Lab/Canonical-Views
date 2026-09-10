@@ -5,3 +5,7 @@ from .modelnet40 import ModelNet40
 from .scanobjectnn import ScanObjectNN
 from .downstream_dataset import Downstream_ModelNet40
 from .modelnet40 import RGB_Depth_Edge_Dataset
+from .policy_replay_dataset import (
+    FixedRandomViewModelNet40,
+    PolicyReplayModelNet40,
+)

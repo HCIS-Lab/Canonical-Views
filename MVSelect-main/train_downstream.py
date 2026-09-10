@@ -76,7 +76,7 @@ def main(args):
         args.selected_view_type = '01234'
     logdir = (
         logdir
-        + f"{args.selected_rep}/{args.selected_view_type}/"
+        + f"{args.arch}/{args.selected_rep}/{args.selected_view_type}/"
         + f"{args.select}/numviews{args.num_cam}/"
         + f"train_ins{args.num_train_instances}"
         + f"_lr{args.lr}"
@@ -88,7 +88,7 @@ def main(args):
     selection_dir = (
         "meta_logs/"
         + f"{args.selected_rep}/"
-        + f"steps{args.selected_steps}_"
+        + f"{args.arch}steps{args.selected_steps}_"
         + f"train_ins{25}_lr{1e-5}base{1.0}other{1.0}"
         + "select_wd0.0001select0.0001_e100"
     )
@@ -210,7 +210,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_cam', type=int, default=2)
 
     parser.add_argument('--eval', action='store_true', help='evaluation only')
-    parser.add_argument('--arch', type=str, default='resnet18')
+    parser.add_argument('--arch', type=str, default='resnet18',
+                        choices=['resnet18', 'vit', 'tinyvit'])
     parser.add_argument('--select', type=str, default='agent')
     parser.add_argument('--aggregation', type=str, default='max', choices=['mean', 'max'])
     parser.add_argument('-d', '--dataset', type=str, default='modelnet_32_60_latest',

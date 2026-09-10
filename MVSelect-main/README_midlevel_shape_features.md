@@ -151,7 +151,7 @@ For every metric, the selected-view summary contains:
 | `baseline_<metric>` | Mean metric value over all candidate views from the same selected object instances. |
 | `baseline_std_<metric>` | Standard deviation of the same-instance candidate-view baseline. Orientation metrics use axial circular standard deviation. |
 | `lift_<metric>` | `selected_<metric> - baseline_<metric>`, or shortest axial angular difference for orientation metrics. |
-| `effect_<metric>` | Standardized lift: `lift_<metric> / baseline_std_<metric>`. This is the preferred unit when raw metric ranges are hard to compare. |
+| `effect_<metric>` | Standardized lift: `lift_<metric> / baseline_std_<metric>`. This is the preferred unit when raw metric ranges are hard to compare. Effect heatmaps use a fixed `[-1, 1]` color scale; values outside that range are saturated. |
 
 The script also records:
 
@@ -169,6 +169,65 @@ selected/lift/effect ranges. Use this file to distinguish two cases:
 - the descriptor has broad per-view range, but the epoch-level curve is narrow
   because it averages many selected views and instances.
 
+For one experiment, the primary figure is
+`midlevel_selected_raw_primary_metrics.png`. It contains three vertically
+stacked panels with independent raw-value y-axes: ellipse aspect ratio,
+bilateral symmetry, and edge entropy. Each panel shows the selected-view mean
+and ±SEM across runs together with the same-instance all-view baseline in the
+same raw units. The old cross-metric lift/effect heatmaps are removed because a shared
+color scale across incompatible metric units is misleading.
+
+## View Type and Mid-Level Feature Association
+
+The script also tracks whether the exact five-way view type is associated with
+the three primary mid-level features among the views selected at each epoch.
+It does not encode the five types as `0, 1, 2, 3, 4`: those numbers would impose
+an arbitrary ordering and make an ordinary correlation invalid.
+
+Two complementary statistics are reported:
+
+| Statistic | Meaning |
+|---|---|
+| `eta_squared` | Unsigned association between all five view types and one continuous feature. It is the fraction of selected-view feature variance lying between the five type means. `0` means the type means explain none of the variance; `1` means they explain all of it. |
+| `point_biserial` | Signed correlation between membership in one type and the feature, with that type compared against all other types. A positive Expanded value means selected Expanded views tend to have a higher feature value than selected non-Expanded views; a negative value means lower. |
+
+Raw family means are plotted alongside the correlations. These distinguish a
+small correlation caused by overlapping distributions from a genuinely small
+difference in raw feature values.
+
+Per-experiment outputs are:
+
+```text
+view_type_midlevel_associations.csv
+view_type_midlevel_eta_squared_heatmap.png
+view_type_midlevel_point_biserial_heatmap.png
+view_type_point_biserial_<metric>_heatmap.png
+view_type_raw_<metric>_heatmap.png
+```
+
+The statistics are computed from one record per selection event while each
+run/epoch block is being aggregated. Selecting the same rendered view in
+several rollouts therefore gives it the corresponding selection-frequency
+weight, so this describes the selector's choice-weighted distribution rather
+than a uniform distribution over unique image files. The full event table is
+not retained because it can contain millions of rows; the source filenames
+remain auditable through the selection JSON and per-view cache. A
+point-biserial value is `NaN` when a selector restriction leaves no examples of
+either the focal type or its comparison set.
+
+The sweep wrapper computes this association analysis only for the `no_freeze`
+experiment. Other freeze and selector-limit experiments still receive the
+existing selected/lift/effect analyses, but do not generate these additional
+view-type association files. The no-freeze association heatmaps are also
+rendered under `compare/midlevel_shape_freeze_sweep/` as one-row comparison
+summaries.
+
+These associations show whether the filename-derived type labels overlap with
+the measured cues. They do not by themselves prove that a view family's
+classification contribution is caused by, or contains information beyond,
+those cues. That stronger claim requires a contribution model containing both
+the three continuous cue differences and selected/replacement family labels.
+
 ## Commands
 
 Single experiment:
@@ -180,6 +239,9 @@ python3 midlevel_shape_features.py \
   --selection_dir meta_logs/rgb/resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100 \
   --bin_epochs 10
 ```
+
+This direct command is the recommended way to run the no-freeze-only
+view-type/mid-level association analysis.
 
 Freeze sweep:
 
@@ -193,8 +255,11 @@ Selector-limit sweep:
 COMPARISON_SET=selector_limit ./run_midlevel_shape_features_pipeline.sh
 ```
 
-Per-metric heatmaps use standardized lift (`VALUE=effect`) by default. To plot
-raw selected values or raw selected-minus-baseline lift instead:
+Cross-experiment per-metric heatmaps use standardized lift (`VALUE=effect`) by default. Effect
+heatmaps use a fixed `[-1, 1]` color scale, where `+1` means one baseline
+standard deviation above the same-instance all-view baseline and `-1` means one
+baseline standard deviation below it. To plot raw selected values or raw
+selected-minus-baseline lift instead:
 
 ```bash
 VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
@@ -247,6 +312,193 @@ METRICS="ellipse_orientation_deg dominant_edge_orientation_deg" \
 VALUE=selected STYLE=line \
 ./run_midlevel_shape_features_pipeline.sh
 ```
+
+Visualize the underlying mask, Zhang-Suen skeleton, and Sobel gradients:
+
+```bash
+# Default: 10 evenly spaced views per test instance.
+python3 visualize_midlevel_extractions.py
+
+# Quick sanity check on the first 5 instances.
+python3 visualize_midlevel_extractions.py --max_instances 5
+
+# Randomly sample 10 views per instance instead of evenly spaced camera views.
+python3 visualize_midlevel_extractions.py --sampling random --random_seed 42
+```
+
+The visualizer writes one contact sheet per instance under:
+
+```text
+logs/midlevel_visual_samples/test_v10/<class>/<instance>_midlevel_extractions.png
+```
+
+Each row is one sampled rendered view. The columns are the original render,
+object mask with Zhang-Suen skeleton overlay, Sobel gradient magnitude, and
+Sobel gradient orientation. The row label prints `ellipse_aspect_ratio`,
+`bilateral_symmetry`, and `edge_entropy` for that view. `visualization_index.csv`
+records exactly which filenames were sampled for each sheet and includes the
+same three metric values.
+
+Plot every candidate view of every object in the test split in the three
+primary raw-feature coordinates:
+
+```bash
+./run_midlevel_feature_space_3d.sh
+```
+
+By default, this highlights one exact five-view rollout at epoch 100 from the
+architecture-matched no-freeze experiment. The script uses the first saved run
+with `feature_100.npz`, chooses initial camera 0, reads its `selected_mask`, and
+removes the initial camera from that mask. Every candidate view is drawn as a
+dark-gray point at moderate opacity; the five agent-selected views are
+overlaid in magenta with a white halo and dark outline. Exact view-family
+colors are intentionally suppressed so the policy choices remain legible.
+
+The three viewpoints are saved separately at full figure size:
+
+```text
+all_test_views_midlevel_3d_primary.png
+all_test_views_midlevel_3d_opposite.png
+all_test_views_midlevel_3d_rear.png
+all_test_views_midlevel_3d_angles.png
+```
+
+`all_test_views_midlevel_3d.png` remains a compatibility copy of the primary
+view. `all_test_views_midlevel_3d_angles.png` concatenates the primary,
+opposite, and rear views in one figure.
+
+Increase point visibility further when needed:
+
+```bash
+MARKER_SIZE=11 SELECTED_MARKER_SIZE=30 ALPHA=0.60 \
+  ./run_midlevel_feature_space_3d.sh
+```
+
+Choose another experiment or epoch with:
+
+```bash
+SELECTION_DIR=meta_logs/rgb/<experiment> SELECTION_EPOCH=50 \
+  ./run_midlevel_feature_space_3d.sh
+```
+
+Choose a particular saved run or initial-camera rollout with:
+
+```bash
+SELECTION_RUN=<timestamp-or-timestamp_selection.json> INITIAL_CAMERA=12 \
+  CLASS_NAME=airplane PER_INSTANCE=1 \
+  ./run_midlevel_feature_space_3d.sh
+```
+
+`EXPECTED_SELECTED_VIEWS=5` is validated for every object after the initial
+camera is removed. The script fails instead of drawing a misleading union if
+the exact rollout arrays are missing or have another size.
+
+Restore the family-colored all-candidate visualization without a selection
+overlay with:
+
+```bash
+HIGHLIGHT_SELECTED=0 ./run_midlevel_feature_space_3d.sh
+```
+
+Plot one class using any ModelNet alias or its numeric class index:
+
+```bash
+CLASS_NAME=airplane ./run_midlevel_feature_space_3d.sh
+CLASS_NAME=chair ./run_midlevel_feature_space_3d.sh
+```
+
+Create one folder for every physical instance of one class:
+
+```bash
+CLASS_NAME=airplane PER_INSTANCE=1 ./run_midlevel_feature_space_3d.sh
+```
+
+Create one combined figure using one evaluated object instance from each of
+the 32 ModelNet classes:
+
+```bash
+ONE_INSTANCE_PER_CLASS=1 ./run_midlevel_feature_space_3d.sh
+```
+
+With selection highlighting enabled, the chosen object is the first
+deterministic exact-rollout instance in each class. Every chosen object retains
+all 114 candidate views and its five agent-selected views. Outputs are isolated
+under `compare/midlevel_feature_space_3d/test/one_instance_per_class/`, and
+`one_instance_per_class_index.csv` records the selected instance ID, candidate
+count, and selected-view count for every class.
+
+This retains the class-level figures and additionally writes folders such as:
+
+```text
+compare/midlevel_feature_space_3d/test/class_airplane/instance_<id>/
+```
+
+The default `PER_INSTANCE_COUNT=5` requires exactly the five instance IDs that
+appear in the requested epoch's saved selections. It does not iterate over all
+50 physical airplane objects in the cache. When highlighting is disabled, it
+reproduces ModelNet40's sorted-loader behavior by taking the first five
+instance IDs. Previously generated `instance_*` folders outside the active
+five are removed on rerun.
+
+Each retained instance folder contains the primary, opposite, rear, and concatenated
+three-angle PNGs plus `instance_midlevel_3d_points.csv`. The parent folder's
+`per_instance_index.csv` lists every generated instance, finite-view count,
+highlighted-view count, and initial camera. Per-instance mode requires exactly
+one `CLASS_NAME`.
+
+Class-specific outputs are isolated under, for example,
+`compare/midlevel_feature_space_3d/test/class_airplane/`. The class filter uses
+all physical test objects and all 114 candidate views per object; it does not
+use the five-object evaluation-loader limit.
+
+The coordinates themselves are independent of selector experiment and
+architecture: every finite row in `cache/midlevel_features_v2_test.csv` is
+plotted without standardization or subsampling. With highlighting enabled,
+the script uses `selected_mask`, `selected_init_cam`, `selected_class`, and
+`selected_instance` from one run's `feature_<epoch>.npz`. This preserves exact
+rollout membership, unlike selection JSON, which flattens actions across
+initial-camera rollouts. The initial input view is removed, leaving exactly
+the five additional agent actions. The audit records the chosen run, feature
+file, initial camera, rollout counts, unmatched selected views, and selected
+views excluded by undefined coordinates.
+
+Legacy feature dumps may contain the exact `selected_mask`,
+`selected_init_cam`, and `selected_class` arrays but no `selected_instance`
+array. For these dumps, the script reconstructs only the missing instance IDs
+from the unshuffled test loader's deterministic order: the first five sorted
+instance IDs in each class. The highlighted camera indices still come directly
+from the saved `selected_mask`; they are not inferred from the flattened
+selection JSON. `all_test_views_midlevel_3d_audit.json` records
+`instance_identity_source` as either `selected_instance` or
+`legacy_sorted_test_loader`.
+
+Use a small smoke test only when checking the pipeline:
+
+```bash
+LIMIT_IMAGES=500 FORCE_RECOMPUTE=1 \
+CACHE_CSV=/tmp/midlevel_features_3d_smoke.csv \
+OUTPUT_DIR=compare/midlevel_feature_space_3d_smoke \
+  ./run_midlevel_feature_space_3d.sh
+```
+
+Do not use `LIMIT_IMAGES` for the reported dataset-wide figure. The wrapper
+plots every view with three finite coordinates and writes any undefined rows
+to `excluded_nonfinite_views.csv`; no coordinate is imputed. Set
+`ALLOW_MISSING=0` to make undefined coordinates a fatal error instead. The
+audit records source, plotted, and excluded view counts.
+
+For the current dataset, the default coverage audit requires 32 classes and
+114 candidate views per object. It also compares the cache's class/filename
+keys against every PNG physically present in each class's `test/` directory,
+so all test objects are included regardless of how many objects per class a
+training or evaluation loader was configured to use. This prevents a partial
+smoke-test cache from being presented as the complete dataset. For a
+deliberately different dataset, override
+`EXPECTED_CLASSES`, `EXPECTED_OBJECTS_PER_CLASS`, and
+`EXPECTED_VIEWS_PER_OBJECT`; set an expectation to `0` to disable only that
+numeric check. `SKIP_DISK_COVERAGE_CHECK=1` disables the exact filename audit
+and should only be used when the cache intentionally refers to unavailable or
+moved source images.
 
 ## Caveats
 

@@ -113,8 +113,10 @@ def parse_args():
     p.add_argument("--rep_list", nargs="+", default=["rgb", "depth", "edge"])
     p.add_argument("--num_runs", type=int, default=None,
                    help="Cap on runs aggregated per experiment. None = use all.")
-    p.add_argument("--feature_dim", type=int, default=512,
-                   help="Per-view feature dim used when reshaping the saved array.")
+    p.add_argument("--feature_dim", type=int, default=None,
+                   help="Optional feature-width validation. By default the width "
+                        "is inferred from each NPZ, so ResNet, ViT, and TinyViT "
+                        "feature dumps can be processed together.")
     p.add_argument("--max_samples", type=int, default=2000,
                    help="Downsample to N points before computing silhouette "
                         "(silhouette is O(n²)). None or 0 = use all samples.")
@@ -154,6 +156,21 @@ def discover_epochs(run_dir):
         if m:
             epochs.append(int(m.group(1)))
     return sorted(epochs)
+
+
+def reshape_feature_rows(values, labels, feature_dim=None, name="features"):
+    """Reshape a saved feature array using its matching label count."""
+    values = np.asarray(values)
+    n_rows = int(np.asarray(labels).size)
+    if n_rows <= 0 or values.size % n_rows:
+        raise ValueError(
+            f"Cannot infer {name} width from shape {values.shape} and "
+            f"{n_rows} labels.")
+    inferred_dim = values.size // n_rows
+    if feature_dim is not None and inferred_dim != feature_dim:
+        raise ValueError(
+            f"{name} has width {inferred_dim}, not --feature_dim {feature_dim}.")
+    return values.reshape(n_rows, inferred_dim)
 
 
 def infer_num_views(run_dirs):
@@ -391,15 +408,18 @@ def compute_metrics_for_run(run_dir, args, selection_by_epoch=None, filename_ind
         epochs = [e for e in epochs if e % args.every_n_epochs == 0]
     for e in epochs:
         npz = np.load(os.path.join(run_dir, f"feature_{e}.npz"))
-        features = npz["features"].squeeze().reshape(-1, args.feature_dim)
         view_index = np.asarray(npz["view_index"])
         view_type = np.asarray(npz["view_type"])
         view_class = np.asarray(npz["view_class"])
+        features = reshape_feature_rows(
+            npz["features"], view_index, args.feature_dim)
         selected_features = None
         selected_class = None
         if "selected_features" in npz.files and "selected_class" in npz.files:
-            selected_features = npz["selected_features"].squeeze().reshape(-1, args.feature_dim)
             selected_class = np.asarray(npz["selected_class"])
+            selected_features = reshape_feature_rows(
+                npz["selected_features"], selected_class, args.feature_dim,
+                name="selected_features")
 
         feature_tensor, instance_class = infer_instance_feature_tensor(
             features, view_index=npz["view_index"], view_class=view_class

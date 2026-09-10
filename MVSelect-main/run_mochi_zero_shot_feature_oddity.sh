@@ -12,15 +12,16 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${ROOT_DIR}/experiment_arch.sh"
 
 COMPARISON_SET="${COMPARISON_SET:-freeze}"  # freeze | selector_limit
 if [ -z "${COMPARISON_NAME:-}" ]; then
     case "${COMPARISON_SET}" in
         freeze)
-            COMPARISON_NAME="mochi_feature_oddity_freeze_sweep"
+            COMPARISON_NAME="$(mvselect_arch_scoped_name mochi_feature_oddity_freeze_sweep)"
             ;;
         selector_limit)
-            COMPARISON_NAME="mochi_feature_oddity_selector_limit_sweep"
+            COMPARISON_NAME="$(mvselect_arch_scoped_name mochi_feature_oddity_selector_limit_sweep)"
             ;;
         *)
             echo "ERROR: unknown COMPARISON_SET=${COMPARISON_SET}. Use freeze or selector_limit."
@@ -28,30 +29,17 @@ if [ -z "${COMPARISON_NAME:-}" ]; then
             ;;
     esac
 fi
+COMPARISON_NAME="$(mvselect_arch_scoped_name "${COMPARISON_NAME}")"
 
 DATASET="${DATASET:-rgb}"
-ARCH="${ARCH:-resnet18}"
 NUM_CAM="${NUM_CAM:-114}"
 GPU_ID="${GPU_ID:-0}"
 N_TRIALS="${N_TRIALS:-}"
 PER_EPOCH_CHECKPOINT="${PER_EPOCH_CHECKPOINT:-0}"
 EPOCHS="${EPOCHS:-}"
 
-FREEZE_EXPS=(
-    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
-    "freeze_10_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_10"
-    "freeze_20_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_20"
-    "freeze_30_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_30"
-    "freeze_40_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_40"
-    "freeze_50_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_50"
-)
-SELECTOR_LIMIT_EXPS=(
-    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_all"
-    "resnet18steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_expanded"
-    "resnet18steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened"
-    "resnet18steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened_remainder"
-    "resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_remainder"
-)
+FREEZE_EXPS=("${MVSELECT_FREEZE_EXPS[@]}")
+SELECTOR_LIMIT_EXPS=("${MVSELECT_SELECTOR_LIMIT_EXPS[@]}")
 case "${COMPARISON_SET}" in
     freeze)
         EXPS=("${FREEZE_EXPS[@]}")

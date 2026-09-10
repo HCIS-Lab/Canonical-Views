@@ -17,15 +17,16 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${ROOT_DIR}/experiment_arch.sh"
 
 COMPARISON_SET="${COMPARISON_SET:-freeze}"  # freeze | selector_limit
 if [ -z "${COMPARISON_NAME:-}" ]; then
     case "${COMPARISON_SET}" in
         freeze)
-            COMPARISON_NAME="midlevel_shape_freeze_sweep"
+            COMPARISON_NAME="$(mvselect_arch_scoped_name midlevel_shape_freeze_sweep)"
             ;;
         selector_limit)
-            COMPARISON_NAME="midlevel_shape_selector_limit_sweep"
+            COMPARISON_NAME="$(mvselect_arch_scoped_name midlevel_shape_selector_limit_sweep)"
             ;;
         *)
             echo "ERROR: unknown COMPARISON_SET=${COMPARISON_SET}. Use freeze or selector_limit."
@@ -33,6 +34,7 @@ if [ -z "${COMPARISON_NAME:-}" ]; then
             ;;
     esac
 fi
+COMPARISON_NAME="$(mvselect_arch_scoped_name "${COMPARISON_NAME}")"
 
 DATASET="${DATASET:-rgb}"
 SPLIT="${SPLIT:-test}"
@@ -48,14 +50,7 @@ BIN_EPOCHS="${BIN_EPOCHS:-10}"
 TITLE_SUFFIX="${TITLE_SUFFIX:-}"
 METRICS="${METRICS:-ellipse_orientation_deg ellipse_aspect_ratio bbox_aspect_ratio skeleton_length_px skeleton_elongation skeleton_length_norm bilateral_symmetry medial_axis_symmetry skeleton_endpoint_count skeleton_branchpoint_count skeleton_branch_density dominant_edge_orientation_deg edge_anisotropy edge_entropy edge_pixel_count}"
 
-FREEZE_EXPS=(
-    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
-    "freeze_10_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_10"
-    "freeze_20_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_20"
-    "freeze_30_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_30"
-    "freeze_40_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_40"
-    "freeze_50_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_50"
-)
+FREEZE_EXPS=("${MVSELECT_FREEZE_EXPS[@]}")
 
 pick_exp() {
     local label="$1"
@@ -93,19 +88,19 @@ pick_exp() {
 
 SELECTOR_LIMIT_EXPS=(
     "$(pick_exp select_all \
-        resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100)"
+        "${MVSELECT_BASE_EXPERIMENT}")"
     "$(pick_exp select_expanded \
-        resnet18steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100 \
-        "${ROOT_DIR}/meta_logs/${DATASET}/"*selview_expanded_family_train*)"
+        "${ARCH}steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100" \
+        "${ROOT_DIR}/meta_logs/${DATASET}/${ARCH}steps5_selview_expanded_family_train"*)"
     "$(pick_exp select_foreshortened \
-        resnet18steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100 \
-        "${ROOT_DIR}/meta_logs/${DATASET}/"*selview_foreshortened_family_train*)"
+        "${ARCH}steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100" \
+        "${ROOT_DIR}/meta_logs/${DATASET}/${ARCH}steps5_selview_foreshortened_family_train"*)"
     "$(pick_exp select_foreshortened_remainder \
-        resnet18steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100 \
-        "${ROOT_DIR}/meta_logs/${DATASET}/"*selview_foreshortened_family_remainder_train*)"
+        "${ARCH}steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100" \
+        "${ROOT_DIR}/meta_logs/${DATASET}/${ARCH}steps5_selview_foreshortened_family_remainder_train"*)"
     "$(pick_exp select_remainder \
-        resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100 \
-        "${ROOT_DIR}/meta_logs/${DATASET}/"*selview_remainder_train*)"
+        "${ARCH}steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100" \
+        "${ROOT_DIR}/meta_logs/${DATASET}/${ARCH}steps5_selview_remainder_train"*)"
 )
 
 case "${COMPARISON_SET}" in
@@ -125,6 +120,7 @@ echo "Mid-level shape feature pipeline:"
 echo "  SET        = ${COMPARISON_SET}"
 echo "  COMPARISON = ${COMPARISON_NAME}"
 echo "  DATASET    = ${DATASET}"
+echo "  ARCH       = ${ARCH}"
 echo "  SPLIT      = ${SPLIT}"
 echo "  VALUE      = ${VALUE}"
 echo "  GROUP_VAL  = ${GROUP_VALUE}"
@@ -154,12 +150,17 @@ for spec in "${EXPS[@]}"; do
         continue
     fi
     echo "  ${label} -> ${exp_dir}/midlevel_features"
+    association_extra=()
+    if [ "${label}" != "no_freeze" ]; then
+        association_extra+=(--skip_view_type_association)
+    fi
     python3 "${ROOT_DIR}/midlevel_shape_features.py" \
         --data_root "${DATA_ROOT}" \
         --split "${SPLIT}" \
         --cache_csv "${CACHE_CSV}" \
         --selection_dir "${exp_dir}" \
         --bin_epochs "${BIN_EPOCHS}" \
+        "${association_extra[@]}" \
         "${compute_extra[@]}"
 done
 

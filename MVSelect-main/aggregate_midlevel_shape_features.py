@@ -65,6 +65,34 @@ ORIENTATION_METRICS = {
     "dominant_edge_orientation_deg",
 }
 
+PRIMARY_RAW_METRICS = [
+    "ellipse_aspect_ratio",
+    "bilateral_symmetry",
+    "edge_entropy",
+]
+
+PRIMARY_RAW_LABELS = {
+    "ellipse_aspect_ratio": "Ellipse aspect ratio",
+    "bilateral_symmetry": "Bilateral symmetry",
+    "edge_entropy": "Edge entropy",
+}
+
+VIEW_BUCKETS = [
+    "expanded",
+    "Expanded-like",
+    "Foreshortened",
+    "Foreshortened-like",
+    "Remainder",
+]
+
+VIEW_BUCKET_LABELS = {
+    "expanded": "Expanded",
+    "Expanded-like": "Expanded-like",
+    "Foreshortened": "Foreshortened",
+    "Foreshortened-like": "Foreshortened-like",
+    "Remainder": "Remainder",
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -95,6 +123,11 @@ def parse_args():
 
 def _csv_path(exp_dir):
     return os.path.join(exp_dir, "midlevel_features", "selected_midlevel_summary.csv")
+
+
+def _association_csv_path(exp_dir):
+    return os.path.join(
+        exp_dir, "midlevel_features", "view_type_midlevel_associations.csv")
 
 
 def parse_exp_spec(spec, dataset):
@@ -177,6 +210,27 @@ def load_all(args):
     return pd.concat(rows, ignore_index=True)
 
 
+def load_all_view_type_associations(args):
+    rows = []
+    for spec in args.exp:
+        exp_dir, label, _ = parse_exp_spec(spec, args.dataset)
+        if label != "no_freeze":
+            continue
+        csv_path = _association_csv_path(exp_dir)
+        if not os.path.exists(csv_path):
+            print(f"SKIP {label} view-type associations: no {csv_path}")
+            continue
+        df = pd.read_csv(csv_path)
+        df["experiment"] = label
+        df["experiment_dir"] = exp_dir
+        rows.append(df)
+        print(f"loaded {label} view-type associations "
+              f"({len(df)} rows from {csv_path})")
+    if not rows:
+        return pd.DataFrame()
+    return pd.concat(rows, ignore_index=True)
+
+
 def make_matrix(df, metric, value_prefix, bin_epochs):
     col = f"{value_prefix}_{metric}"
     if col not in df.columns:
@@ -217,7 +271,10 @@ def plot_heatmap(df, metric, args):
     if finite.size == 0:
         return
 
-    if args.value in {"lift", "effect"}:
+    if args.value == "effect":
+        vmin, vmax = -1.0, 1.0
+        cmap = "RdBu_r"
+    elif args.value == "lift":
         vmax = float(np.nanmax(np.abs(finite)))
         vmin = -vmax
         cmap = "RdBu_r"
@@ -238,9 +295,15 @@ def plot_heatmap(df, metric, args):
     if args.title_suffix:
         title += f"\n{args.title_suffix}"
     ax.set_title(title)
-    cbar = fig.colorbar(im, ax=ax)
+    extend = "both" if args.value == "effect" and (
+        np.nanmin(finite) < vmin or np.nanmax(finite) > vmax
+    ) else "neither"
+    cbar = fig.colorbar(im, ax=ax, extend=extend)
     cbar.set_label(f"{args.value}_{metric}")
-    if args.value in {"lift", "effect"}:
+    if args.value == "effect":
+        cbar.set_ticks([-1.0, 0.0, 1.0])
+        cbar.set_ticklabels(["-1", "0", "+1"])
+    elif args.value == "lift":
         ticks = sorted({vmin, 0.0, vmax})
         cbar.set_ticks(ticks)
         cbar.set_ticklabels([f"{t:+.3f}" if t != 0 else "0" for t in ticks])
@@ -343,6 +406,171 @@ def plot_group_curves(df, group, metrics, value_prefix, args):
     print(f"Saved: {out}")
 
 
+def _mean_correlations(values):
+    values = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    if values.empty:
+        return np.nan
+    clipped = np.clip(values.to_numpy(dtype=float), -0.999999, 0.999999)
+    return float(np.tanh(np.mean(np.arctanh(clipped))))
+
+
+def make_long_association_matrix(df, row_specs, value_col, bin_epochs,
+                                 correlation=False):
+    rows = []
+    common_centers = None
+    common_labels = None
+    kept_labels = []
+    for row_label, selectors in row_specs:
+        block = df
+        for column, value in selectors.items():
+            block = block[block[column] == value]
+        if block.empty:
+            continue
+        aggregate = _mean_correlations if correlation else "mean"
+        epoch_values = block.groupby("epoch", sort=True)[value_col].agg(
+            aggregate).reset_index()
+        centers, values, tick_labels = bin_epoch_series(
+            epoch_values["epoch"].to_numpy(),
+            pd.to_numeric(epoch_values[value_col], errors="coerce").to_numpy(),
+            bin_epochs,
+        )
+        if common_centers is None:
+            common_centers = centers
+            common_labels = tick_labels
+        elif not np.array_equal(common_centers, centers):
+            common_centers = np.union1d(common_centers, centers)
+            common_labels = [str(int(round(epoch))) for epoch in common_centers]
+        kept_labels.append(row_label)
+        rows.append((centers, values))
+    if not rows:
+        return [], [], np.empty((0, 0))
+    matrix = np.full((len(rows), len(common_centers)), np.nan)
+    for row_idx, (centers, values) in enumerate(rows):
+        indices = np.searchsorted(common_centers, centers)
+        matrix[row_idx, indices] = values
+    return kept_labels, common_labels, matrix
+
+
+def draw_association_comparison_heatmap(matrix, row_labels, column_labels,
+                                        title, colorbar_label, out_path,
+                                        vmin, vmax, cmap):
+    if matrix.size == 0 or not np.isfinite(matrix).any():
+        return
+    label_width = min(5.0, 0.05 * max(len(str(label)) for label in row_labels))
+    fig, ax = plt.subplots(
+        figsize=(max(8, 0.7 * len(column_labels) + 3.0 + label_width),
+                 max(3.0, 0.36 * len(row_labels) + 1.8)),
+        constrained_layout=True,
+    )
+    im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax,
+                   interpolation="nearest")
+    ax.set_xticks(np.arange(len(column_labels)))
+    ax.set_xticklabels(column_labels, rotation=35, ha="right", fontsize=8)
+    ax.set_yticks(np.arange(len(row_labels)))
+    ax.set_yticklabels(row_labels, fontsize=7)
+    ax.set_xlabel("Selection epoch")
+    ax.set_title(title)
+    if len(row_labels) <= 35:
+        threshold = max(abs(vmin), abs(vmax)) * 0.55
+        for row_idx in range(matrix.shape[0]):
+            for col_idx in range(matrix.shape[1]):
+                value = matrix[row_idx, col_idx]
+                if not np.isfinite(value):
+                    continue
+                color = "white" if abs(value) > threshold else "black"
+                ax.text(col_idx, row_idx, f"{value:+.2f}", ha="center",
+                        va="center", fontsize=6, color=color)
+    colorbar = fig.colorbar(im, ax=ax)
+    colorbar.set_label(colorbar_label)
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_cross_experiment_view_type_associations(df, args):
+    if df.empty:
+        return
+    experiments = list(dict.fromkeys(df["experiment"].astype(str)))
+    for metric in PRIMARY_RAW_METRICS:
+        metric_df = df[df["metric"] == metric]
+        if metric_df.empty:
+            continue
+
+        eta_df = metric_df.drop_duplicates(
+            ["experiment", "run", "epoch", "metric"])
+        eta_specs = [
+            (experiment, {"experiment": experiment})
+            for experiment in experiments
+        ]
+        labels, columns, matrix = make_long_association_matrix(
+            eta_df, eta_specs, "eta_squared", args.bin_epochs)
+        draw_association_comparison_heatmap(
+            matrix,
+            labels,
+            columns,
+            f"Exact view-type association: {PRIMARY_RAW_LABELS[metric]}",
+            "Eta-squared (five view types; unsigned)",
+            os.path.join(
+                args.output_dir,
+                f"view_type_eta_squared_{metric}_heatmap.png"),
+            0.0,
+            1.0,
+            "viridis",
+        )
+
+        family_specs = [
+            (
+                f"{experiment} | {VIEW_BUCKET_LABELS[view_type]}",
+                {"experiment": experiment, "view_type": view_type},
+            )
+            for experiment in experiments
+            for view_type in VIEW_BUCKETS
+        ]
+        labels, columns, matrix = make_long_association_matrix(
+            metric_df,
+            family_specs,
+            "point_biserial",
+            args.bin_epochs,
+            correlation=True,
+        )
+        draw_association_comparison_heatmap(
+            matrix,
+            labels,
+            columns,
+            f"Signed view-type association: {PRIMARY_RAW_LABELS[metric]}",
+            "Point-biserial correlation (type vs all other types)",
+            os.path.join(
+                args.output_dir,
+                f"view_type_point_biserial_{metric}_heatmap.png"),
+            -1.0,
+            1.0,
+            "RdBu_r",
+        )
+
+        labels, columns, matrix = make_long_association_matrix(
+            metric_df, family_specs, "family_mean", args.bin_epochs)
+        finite = matrix[np.isfinite(matrix)]
+        if not finite.size:
+            continue
+        vmin, vmax = float(finite.min()), float(finite.max())
+        if np.isclose(vmin, vmax):
+            padding = max(abs(vmin) * 0.01, 1e-6)
+            vmin, vmax = vmin - padding, vmax + padding
+        draw_association_comparison_heatmap(
+            matrix,
+            labels,
+            columns,
+            f"Raw selected-view {PRIMARY_RAW_LABELS[metric]} by view type",
+            f"Mean {PRIMARY_RAW_LABELS[metric]} (raw units)",
+            os.path.join(
+                args.output_dir,
+                f"view_type_raw_{metric}_heatmap.png"),
+            vmin,
+            vmax,
+            "viridis",
+        )
+
+
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -371,6 +599,14 @@ def main():
         for value_prefix in group_values:
             for group, metrics in METRIC_GROUPS.items():
                 plot_group_curves(df, group, metrics, value_prefix, args)
+
+    association_df = load_all_view_type_associations(args)
+    if not association_df.empty:
+        association_out = os.path.join(
+            args.output_dir, "view_type_midlevel_associations.csv")
+        association_df.to_csv(association_out, index=False)
+        print(f"Saved: {association_out} ({len(association_df)} rows)")
+        plot_cross_experiment_view_type_associations(association_df, args)
 
     print("Done.")
 

@@ -2,6 +2,7 @@ import os
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+from src.models.architectures import infer_architecture_from_name
 
 # Per-object share of available views in each bucket on disk
 # (modelnet_32_60_1_23). Used as the chance baseline against which agent
@@ -21,10 +22,86 @@ EXPANDED_FAM_PRIOR = BUCKET_PRIOR["expanded"] + BUCKET_PRIOR["Expanded-like"]
 FORESHORTENED_FAM_PRIOR = BUCKET_PRIOR["Foreshortened"] + BUCKET_PRIOR["Foreshortened-like"]
 REMAINDER_PRIOR = BUCKET_PRIOR["Remainder"]
 
+
+def mean_sem(arr):
+    arr = np.asarray(arr, dtype=float)
+    mean = arr.mean(axis=0)
+    if arr.shape[0] > 1:
+        sem = arr.std(axis=0, ddof=1) / np.sqrt(arr.shape[0])
+    else:
+        sem = np.zeros_like(mean)
+    return mean, sem
+
+
+def plot_selection_share_curves(per_run, priors, curve_labels,
+                                baseline_labels, colors, output_path, title,
+                                line_styles=None, line_widths=None,
+                                fill_alphas=None, crossover=None):
+    """Plot mean selection shares, run-level SEM, and chance baselines."""
+    line_styles = line_styles or {}
+    line_widths = line_widths or {}
+    fill_alphas = fill_alphas or {}
+    means = {}
+    epochs = np.arange(next(iter(per_run.values())).shape[1])
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.2))
+    for key, values in per_run.items():
+        mean, sem = mean_sem(values)
+        means[key] = mean
+        color = colors[key]
+        ax.plot(
+            epochs,
+            mean,
+            color=color,
+            lw=line_widths.get(key, 2.0),
+            ls=line_styles.get(key, "-"),
+            alpha=0.7 if key == "Remainder" else 1.0,
+            label=curve_labels[key],
+        )
+        ax.fill_between(
+            epochs,
+            mean - sem,
+            mean + sem,
+            color=color,
+            alpha=fill_alphas.get(key, 0.2),
+        )
+
+    for key, prior in priors.items():
+        ax.axhline(
+            prior,
+            color=colors[key],
+            ls=":",
+            lw=1.0,
+            alpha=0.5,
+            label=f"{baseline_labels[key]} chance ({prior:.1%})",
+        )
+
+    if crossover is not None:
+        left_key, right_key, label = crossover
+        indices = np.flatnonzero(means[left_key] > means[right_key])
+        if len(indices):
+            epoch = int(indices[0])
+            ax.axvline(
+                epoch,
+                color=colors[left_key],
+                ls=":",
+                alpha=0.6,
+                label=f"{label} @ ep {epoch}",
+            )
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Share of selections")
+    ax.set_title(title)
+    ax.set_ylim(0.0, 1.0)
+    ax.legend(loc="best", fontsize=7)
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
 REP_LIST = ['rgb', 'depth', 'edge']
 # , 'rgb_depth', 'rgb_edge', 'depth_edge', 'rgb_depth_edge']
 # REP_LIST = ['test_rgb']
-ARCH=['resnet18', 'vit']
+ARCH=['resnet18', 'vit', 'tinyvit']
 
 ROOT = "meta_logs"
 for REP in REP_LIST:
@@ -34,6 +111,7 @@ for REP in REP_LIST:
         EXP_LIST = [
             name for name in os.listdir(REP_ROOT)
             if os.path.isdir(os.path.join(REP_ROOT, name))
+            and infer_architecture_from_name(name) == arch
         ]
         for EXP in EXP_LIST:
             print(EXP)
@@ -176,6 +254,37 @@ for REP in REP_LIST:
             if num_runs == 0:
                 print("No runs found in " + EXP_ROOT)
                 continue
+
+            recognition_num_views = {
+                int(r.get(
+                    "recognition_num_views",
+                    1 if r.get("active_single_view", False)
+                    else int(r.get("steps", 4)) + 1,
+                ))
+                for r in runs
+            }
+            random_num_views = {
+                int(r.get("steps", 1 if r.get("active_single_view", False) else 5))
+                for r in runs
+            }
+            if len(recognition_num_views) != 1 or len(random_num_views) != 1:
+                raise ValueError(
+                    f"Inconsistent input-view counts across runs in {EXP_ROOT}: "
+                    f"recognition={sorted(recognition_num_views)}, "
+                    f"random={sorted(random_num_views)}"
+                )
+            recognition_num_views = recognition_num_views.pop()
+            random_num_views = random_num_views.pop()
+            ACC_KEYS_MAPPING["accuracy"] = (
+                f"Self-generated (N={recognition_num_views})"
+            )
+            ACC_KEYS_MAPPING["random_accuracy"] = (
+                f"Random (N={random_num_views})"
+            )
+            ACC_KEYS_MAPPING_3["accuracy"] = ACC_KEYS_MAPPING["accuracy"]
+            ACC_KEYS_MAPPING_3["random_accuracy"] = ACC_KEYS_MAPPING["random_accuracy"]
+            ACC_KEYS_MAPPING_5["accuracy"] = ACC_KEYS_MAPPING["accuracy"]
+            ACC_KEYS_MAPPING_5["random_accuracy"] = ACC_KEYS_MAPPING["random_accuracy"]
 
 
             # =========================
@@ -339,20 +448,35 @@ for REP in REP_LIST:
                 json.dump(summary, f, indent=2, sort_keys=True)
 
             # =========================
-            # FIGURE
+            # EXACT VIEW-TYPE PLOT
             # =========================
-            plt.figure()
-            for k in VIEW_KEYS:
-                plt.plot(mean_curves[k], label=k)
-
-            plt.xlabel("Epoch")
-            plt.ylabel("Ratio")
-            plt.title("Averaged Smoothed View Ratios Across Runs")
-            plt.ylim(0.0, 1.0)
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(os.path.join(EXP_ROOT, OUT_FIG))
-            plt.close()
+            exact_colors = {
+                "expanded": "#009E73",
+                "Expanded-like": "#0072B2",
+                "Foreshortened": "#D55E00",
+                "Foreshortened-like": "#CC79A7",
+                "Remainder": "#666666",
+            }
+            exact_labels = {
+                "expanded": "Expanded",
+                "Expanded-like": "Expanded-like",
+                "Foreshortened": "Foreshortened",
+                "Foreshortened-like": "Foreshortened-like",
+                "Remainder": "Remainder",
+            }
+            plot_selection_share_curves(
+                per_run={key: smoothed[key] for key in VIEW_KEYS},
+                priors={key: BUCKET_PRIOR[key] for key in VIEW_KEYS},
+                curve_labels=exact_labels,
+                baseline_labels=exact_labels,
+                colors=exact_colors,
+                output_path=os.path.join(EXP_ROOT, OUT_FIG),
+                title="Exact View Types - Selection Share "
+                      "(mean ± SEM across runs)",
+                line_styles={"Remainder": "--"},
+                line_widths={"Remainder": 1.0},
+                fill_alphas={"Remainder": 0.1},
+            )
 
             # =========================
             # COLLAPSED FAMILY PLOT
@@ -366,54 +490,56 @@ for REP in REP_LIST:
             exp_per_run = smoothed["expanded"] + smoothed["Expanded-like"]
             fore_per_run = smoothed["Foreshortened"] + smoothed["Foreshortened-like"]
             rem_per_run = smoothed["Remainder"]
-
-            def _mean_sem(arr):
-                mean = arr.mean(axis=0)
-                sem = arr.std(axis=0, ddof=1) / np.sqrt(arr.shape[0]) if arr.shape[0] > 1 else np.zeros_like(mean)
-                return mean, sem
-
-            exp_mean, exp_sem = _mean_sem(exp_per_run)
-            fore_mean, fore_sem = _mean_sem(fore_per_run)
-            rem_mean, rem_sem = _mean_sem(rem_per_run)
-            epochs = np.arange(exp_mean.shape[0])
-
-            plt.figure()
-            plt.plot(epochs, exp_mean, color="#2ca02c", lw=2.0,
-                     label="Expanded family (expanded + Expanded-like)")
-            plt.fill_between(epochs, exp_mean - exp_sem, exp_mean + exp_sem,
-                             color="#2ca02c", alpha=0.2)
-            plt.plot(epochs, fore_mean, color="#d62728", lw=2.0,
-                     label="Foreshortened family (Foreshortened + Foreshortened-like)")
-            plt.fill_between(epochs, fore_mean - fore_sem, fore_mean + fore_sem,
-                             color="#d62728", alpha=0.2)
-            plt.plot(epochs, rem_mean, color="#7f7f7f", lw=1.0, ls="--", alpha=0.7,
-                     label="Remainder")
-            plt.fill_between(epochs, rem_mean - rem_sem, rem_mean + rem_sem,
-                             color="#7f7f7f", alpha=0.1)
-
-            # Chance reference lines (= share of available views in each bucket-group)
-            plt.axhline(EXPANDED_FAM_PRIOR, color="#2ca02c", ls=":", lw=1.0, alpha=0.5,
-                        label=f"expanded-family chance ({EXPANDED_FAM_PRIOR:.1%})")
-            plt.axhline(FORESHORTENED_FAM_PRIOR, color="#d62728", ls=":", lw=1.0, alpha=0.5,
-                        label=f"foreshortened-family chance ({FORESHORTENED_FAM_PRIOR:.1%})")
-            plt.axhline(REMAINDER_PRIOR, color="#7f7f7f", ls=":", lw=1.0, alpha=0.5,
-                        label=f"remainder chance ({REMAINDER_PRIOR:.1%})")
-
-            # First epoch where mean(expanded family) > mean(foreshortened family)
+            exp_mean, _ = mean_sem(exp_per_run)
+            fore_mean, _ = mean_sem(fore_per_run)
+            rem_mean, _ = mean_sem(rem_per_run)
             cross = first_epoch(exp_mean > fore_mean)
-            if cross is not None:
-                plt.axvline(cross, color="#2ca02c", ls=":", alpha=0.6,
-                            label=f"expanded > foreshortened @ ep {cross}")
-
-            plt.xlabel("Epoch")
-            plt.ylabel("Share of selections")
-            plt.title("Expanded vs Foreshortened Families — Selection Share "
-                      "(mean ± SEM across runs)")
-            plt.ylim(0.0, 1.0)
-            plt.legend(loc="best", fontsize=7)
-            plt.tight_layout()
-            plt.savefig(os.path.join(EXP_ROOT, "aggregated_view_family_ratios.png"))
-            plt.close()
+            family_per_run = {
+                "expanded_family": exp_per_run,
+                "foreshortened_family": fore_per_run,
+                "Remainder": rem_per_run,
+            }
+            family_priors = {
+                "expanded_family": EXPANDED_FAM_PRIOR,
+                "foreshortened_family": FORESHORTENED_FAM_PRIOR,
+                "Remainder": REMAINDER_PRIOR,
+            }
+            family_curve_labels = {
+                "expanded_family":
+                    "Expanded family (Expanded + Expanded-like)",
+                "foreshortened_family":
+                    "Foreshortened family (Foreshortened + Foreshortened-like)",
+                "Remainder": "Remainder",
+            }
+            family_baseline_labels = {
+                "expanded_family": "expanded-family",
+                "foreshortened_family": "foreshortened-family",
+                "Remainder": "remainder",
+            }
+            family_colors = {
+                "expanded_family": "#2ca02c",
+                "foreshortened_family": "#d62728",
+                "Remainder": "#7f7f7f",
+            }
+            plot_selection_share_curves(
+                per_run=family_per_run,
+                priors=family_priors,
+                curve_labels=family_curve_labels,
+                baseline_labels=family_baseline_labels,
+                colors=family_colors,
+                output_path=os.path.join(
+                    EXP_ROOT, "aggregated_view_family_ratios.png"),
+                title="Expanded vs Foreshortened Families - Selection Share "
+                      "(mean ± SEM across runs)",
+                line_styles={"Remainder": "--"},
+                line_widths={"Remainder": 1.0},
+                fill_alphas={"Remainder": 0.1},
+                crossover=(
+                    "expanded_family",
+                    "foreshortened_family",
+                    "expanded > foreshortened",
+                ),
+            )
 
             # =========================
             # NORMALIZED ("LIFT OVER CHANCE") PLOT
@@ -424,9 +550,10 @@ for REP in REP_LIST:
             fore_lift_per_run = fore_per_run / FORESHORTENED_FAM_PRIOR
             rem_lift_per_run = rem_per_run / REMAINDER_PRIOR
 
-            exp_lift_mean, exp_lift_sem = _mean_sem(exp_lift_per_run)
-            fore_lift_mean, fore_lift_sem = _mean_sem(fore_lift_per_run)
-            rem_lift_mean, rem_lift_sem = _mean_sem(rem_lift_per_run)
+            exp_lift_mean, exp_lift_sem = mean_sem(exp_lift_per_run)
+            fore_lift_mean, fore_lift_sem = mean_sem(fore_lift_per_run)
+            rem_lift_mean, rem_lift_sem = mean_sem(rem_lift_per_run)
+            epochs = np.arange(exp_lift_mean.shape[0])
 
             plt.figure()
             plt.plot(epochs, exp_lift_mean, color="#2ca02c", lw=2.0,
@@ -477,7 +604,7 @@ for REP in REP_LIST:
 
             plt.xlabel("Epoch")
             plt.ylabel("Accuracy (%)")
-            plt.title("Averaged Smoothed View Ratios Across Runs")
+            plt.title("Test Accuracy Across Input Regimes (mean across runs)")
             plt.ylim(0.0, 100.0)
             plt.legend()
             plt.tight_layout()
@@ -490,7 +617,7 @@ for REP in REP_LIST:
 
             plt.xlabel("Epoch")
             plt.ylabel("Accuracy (%)")
-            plt.title("Averaged Smoothed View Ratios Across Runs")
+            plt.title("Test Accuracy Across Input Regimes (mean across runs)")
             plt.ylim(0.0, 100.0)
             plt.legend()
             plt.tight_layout()
@@ -503,7 +630,7 @@ for REP in REP_LIST:
 
             plt.xlabel("Epoch")
             plt.ylabel("Accuracy (%)")
-            plt.title("Averaged Smoothed View Ratios Across Runs")
+            plt.title("Test Accuracy Across Input Regimes (mean across runs)")
             plt.ylim(0.0, 100.0)
             plt.legend()
             plt.tight_layout()

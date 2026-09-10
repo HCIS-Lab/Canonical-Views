@@ -33,6 +33,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from src.models.mvcnn import MVCNN
+from src.models.architectures import ARCHITECTURE_CHOICES, resolve_architecture
 
 
 MOCHI_DATASET = "tzler/MOCHI"
@@ -63,7 +64,7 @@ def parse_args():
     p.add_argument("--dataset", default="rgb",
                    help="MVSelect representation name used for log resolution "
                         "and MVCNN input-channel setup.")
-    p.add_argument("--arch", default="resnet18")
+    p.add_argument("--arch", default="auto", choices=ARCHITECTURE_CHOICES)
     p.add_argument("--aggregation", default="max")
     p.add_argument("--num_cam", type=int, default=114,
                    help="Number of cameras used by the checkpoint's selector "
@@ -224,8 +225,6 @@ def resolve_checkpoint_specs(args):
 
 
 def load_mvcNN_feature_model(args, ckpt_path, device):
-    dummy = _DummyDataset(num_class=args.num_class, num_cam=args.num_cam)
-    model = MVCNN(dummy, args.arch, args.aggregation, args.dataset).to(device)
     state = torch.load(ckpt_path, map_location=device)
     if isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
@@ -233,6 +232,9 @@ def load_mvcNN_feature_model(args, ckpt_path, device):
         (k[7:] if k.startswith("module.") else k): v
         for k, v in state.items()
     }
+    arch = resolve_architecture(args.arch, ckpt_path, state)
+    dummy = _DummyDataset(num_class=args.num_class, num_cam=args.num_cam)
+    model = MVCNN(dummy, arch, args.aggregation, args.dataset).to(device)
     model_state = model.state_dict()
     filtered = {}
     skipped = []

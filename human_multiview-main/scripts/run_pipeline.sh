@@ -19,6 +19,11 @@ set -euo pipefail
 
 # --- Config (override via env vars) ---
 GPUS="${GPUS:-4}"
+ARCH="${ARCH:-resnet18}"
+case "${ARCH}" in
+    resnet18|vit|tinyvit) ;;
+    *) echo "ERROR: ARCH=${ARCH}; use resnet18, vit, or tinyvit."; exit 1 ;;
+esac
 MODELS="${MODELS:-vggt dinov2}"
 VIEW_TYPE="${VIEW_TYPE:-01234}"
 EPOCH_GROUPS="${EPOCH_GROUPS:-1-10,11-20,21-30,31-40,41-50,51-60,61-70,71-80,81-90,91-100}"
@@ -26,11 +31,16 @@ NUM_CAM="${NUM_CAM:-5}"
 SPLIT="${SPLIT:-test}"
 PER_CLS="${PER_CLS:-5}"
 LIMIT="${LIMIT:-}"
-SELECTION_DIR="${SELECTION_DIR:-}"   # empty = use python script's default
+SELECTION_DIR="${SELECTION_DIR:-}"   # empty = architecture-specific python default
 
 # --- Derived paths ---
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/results/views/v${VIEW_TYPE}}"
+if [ "${ARCH}" = "resnet18" ]; then
+    DEFAULT_OUTPUT_DIR="${ROOT_DIR}/results/views/v${VIEW_TYPE}"
+else
+    DEFAULT_OUTPUT_DIR="${ROOT_DIR}/results/views/v${VIEW_TYPE}/${ARCH}"
+fi
+OUTPUT_DIR="${OUTPUT_DIR:-${DEFAULT_OUTPUT_DIR}}"
 SUMMARY_DIR="${OUTPUT_DIR}/summary"
 PLOTS_DIR="${OUTPUT_DIR}/plots"
 LOG_DIR="${OUTPUT_DIR}/logs"
@@ -49,6 +59,7 @@ fi
 echo "=========================================="
 echo "Pipeline config:"
 echo "  GPUS         = ${GPUS}"
+echo "  ARCH        = ${ARCH}"
 echo "  MODELS       = ${MODELS}"
 echo "  VIEW_TYPE    = ${VIEW_TYPE}"
 echo "  EPOCH_GROUPS = ${EPOCH_GROUPS}"
@@ -68,6 +79,7 @@ for i in $(seq 0 $((GPUS - 1))); do
     echo "  shard ${i}/${GPUS} -> GPU ${i}, log: ${log_file}"
     CUDA_VISIBLE_DEVICES=${i} python3 "${ROOT_DIR}/scripts/run_evaluation_views.py" \
         --models ${MODELS} \
+        --arch "${ARCH}" \
         --gpu_id 0 \
         --selected_view_type "${VIEW_TYPE}" \
         --epoch_groups "${EPOCH_GROUPS}" \

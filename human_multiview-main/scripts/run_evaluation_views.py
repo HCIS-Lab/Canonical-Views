@@ -59,11 +59,14 @@ def parse_args():
                    default=["vggt", "dinov2"],
                    help="Models to evaluate.")
     p.add_argument("--gpu_id", type=int, default=0)
+    p.add_argument("--arch", choices=["resnet18", "vit", "tinyvit"],
+                   default="resnet18",
+                   help="Architecture of the MVSelect experiment that produced "
+                        "the selections; used only for default input/output paths.")
     p.add_argument("--data_root", type=str,
                    default="/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/modelnet_32_60_1_23",
                    help="Root of modelnet_32_60_1_23 (per-class subfolders).")
-    p.add_argument("--selection_dir", type=str,
-                   default="/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/MVSelect-main/meta_logs/rgb/resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100",
+    p.add_argument("--selection_dir", type=str, default=None,
                    help="Folder containing the agent's *_selection.json files.")
     p.add_argument("--selected_view_type", type=str, default="01234",
                    help="Digits 0-4 selecting view-type buckets from VIEW_TYPE_LIST.")
@@ -207,13 +210,26 @@ def run_dinov2(device, trials, limit):
 
 def main():
     args = parse_args()
+    if args.selection_dir is None:
+        exp = (
+            f"{args.arch}steps5_train_ins25_lr0.0005base1.0other1.0"
+            "select_wd0.0001select0.0001_e100"
+        )
+        args.selection_dir = os.path.join(
+            "/nfs/wattrel/data/md0/kung/Cognitive-Inspired-View-Selection/"
+            "MVSelect-main/meta_logs/rgb",
+            exp,
+        )
 
     device = f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu"
     if "cuda" in device:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
         device = "cuda"
 
-    output_dir = args.output_dir or str(RESULTS_DIR / "views" / f"v{args.selected_view_type}")
+    output_dir = args.output_dir or str(
+        RESULTS_DIR / "views" / f"v{args.selected_view_type}"
+        / (args.arch if args.arch != "resnet18" else "")
+    )
     os.makedirs(output_dir, exist_ok=True)
 
     epoch_groups = parse_epoch_groups(args.epoch_groups)

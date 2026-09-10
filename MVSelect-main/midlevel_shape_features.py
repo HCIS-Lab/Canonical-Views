@@ -38,6 +38,14 @@ VIEW_BUCKETS = [
     "Remainder",
 ]
 
+VIEW_BUCKET_LABELS = {
+    "expanded": "Expanded",
+    "Expanded-like": "Expanded-like",
+    "Foreshortened": "Foreshortened",
+    "Foreshortened-like": "Foreshortened-like",
+    "Remainder": "Remainder",
+}
+
 METRIC_GROUPS = {
     "axis_visibility": [
         "ellipse_orientation_deg",
@@ -69,6 +77,18 @@ ORIENTATION_METRICS = {
     "dominant_edge_orientation_deg",
 }
 
+PRIMARY_RAW_METRICS = [
+    "ellipse_aspect_ratio",
+    "bilateral_symmetry",
+    "edge_entropy",
+]
+
+PRIMARY_RAW_LABELS = {
+    "ellipse_aspect_ratio": "Ellipse aspect ratio",
+    "bilateral_symmetry": "Bilateral symmetry",
+    "edge_entropy": "Edge entropy",
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -89,6 +109,9 @@ def parse_args():
                    help="Smoke-test cap on number of rendered images.")
     p.add_argument("--bin_epochs", type=int, default=10,
                    help="Number of epoch bins for heatmaps/plots. 0 = no binning.")
+    p.add_argument("--skip_view_type_association", action="store_true",
+                   help="Skip the exact-view-type association analysis. The sweep "
+                        "wrapper uses this for every experiment except no_freeze.")
     return p.parse_args()
 
 
@@ -452,7 +475,8 @@ def load_selection_jsons(selection_dir):
     return runs
 
 
-def aggregate_selected_features(view_df, selection_dir):
+def aggregate_selected_features(view_df, selection_dir,
+                                compute_view_type_association=True):
     idx = {
         (int(r.class_idx), r.filename): r
         for r in view_df.itertuples(index=False)
@@ -473,6 +497,7 @@ def aggregate_selected_features(view_df, selection_dir):
     }
 
     rows = []
+    association_rows = []
     for run_name, whole in load_selection_jsons(selection_dir):
         for epoch_str, epoch_sel in whole.items():
             values = []
@@ -495,6 +520,9 @@ def aggregate_selected_features(view_df, selection_dir):
             if not values:
                 continue
             block = pd.DataFrame([v._asdict() for v in values])
+            if compute_view_type_association:
+                association_rows.extend(view_type_midlevel_association_rows(
+                    block, run_name, int(epoch_str)))
             baseline_values = []
             for key in selected_instances:
                 baseline_values.extend(by_instance.get(key, []))
@@ -535,9 +563,9 @@ def aggregate_selected_features(view_df, selection_dir):
 
     raw = pd.DataFrame(rows)
     if raw.empty:
-        return raw, raw
+        return raw, raw, pd.DataFrame(association_rows)
     summary = summarize_by_epoch(raw)
-    return raw, summary
+    return raw, summary, pd.DataFrame(association_rows)
 
 
 def metric_name_from_column(col):
@@ -562,6 +590,259 @@ def summarize_by_epoch(df):
                 row[col] = pd.to_numeric(block[col], errors="coerce").mean()
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def correlation_ratio_eta_squared(values, groups):
+    """Association strength for a categorical family and continuous metric."""
+    frame = pd.DataFrame({"value": values, "group": groups}).replace(
+        [np.inf, -np.inf], np.nan).dropna()
+    if len(frame) < 3 or frame["group"].nunique() < 2:
+        return np.nan
+    grand_mean = float(frame["value"].mean())
+    ss_total = float(np.square(frame["value"] - grand_mean).sum())
+    if ss_total <= 1e-12:
+        return np.nan
+    ss_between = 0.0
+    for _, block in frame.groupby("group", sort=False):
+        ss_between += len(block) * (float(block["value"].mean()) - grand_mean) ** 2
+    return float(ss_between / ss_total)
+
+
+def point_biserial_correlation(values, membership):
+    """Pearson correlation between a continuous metric and a binary family flag."""
+    frame = pd.DataFrame({"value": values, "member": membership}).replace(
+        [np.inf, -np.inf], np.nan).dropna()
+    if (len(frame) < 3 or frame["member"].nunique() < 2
+            or frame["value"].nunique() < 2):
+        return np.nan
+    return float(np.corrcoef(
+        frame["member"].astype(float), frame["value"].astype(float))[0, 1])
+
+
+def view_type_midlevel_association_rows(block, run_name, epoch):
+    """Compute family/metric associations for one selected-view event block."""
+    rows = []
+    for metric in PRIMARY_RAW_METRICS:
+        if metric not in block.columns:
+            continue
+        metric_block = block[["view_type", metric]].copy()
+        metric_block[metric] = pd.to_numeric(
+            metric_block[metric], errors="coerce")
+        metric_block = metric_block.replace(
+            [np.inf, -np.inf], np.nan).dropna()
+        eta_squared = correlation_ratio_eta_squared(
+            metric_block[metric], metric_block["view_type"])
+        for view_type in VIEW_BUCKETS:
+            membership = metric_block["view_type"] == view_type
+            family_values = metric_block.loc[membership, metric]
+            other_values = metric_block.loc[~membership, metric]
+            family_mean = (
+                float(family_values.mean()) if len(family_values) else np.nan)
+            other_mean = (
+                float(other_values.mean()) if len(other_values) else np.nan)
+            rows.append({
+                "run": run_name,
+                "epoch": int(epoch),
+                "metric": metric,
+                "view_type": view_type,
+                "view_type_label": VIEW_BUCKET_LABELS[view_type],
+                "n": int(len(metric_block)),
+                "n_view_types": int(metric_block["view_type"].nunique()),
+                "n_family": int(membership.sum()),
+                "n_other": int((~membership).sum()),
+                "eta_squared": eta_squared,
+                "point_biserial": point_biserial_correlation(
+                    metric_block[metric], membership),
+                "family_mean": family_mean,
+                "other_mean": other_mean,
+                "family_minus_other_mean": (
+                    family_mean - other_mean
+                    if np.isfinite(family_mean) and np.isfinite(other_mean)
+                    else np.nan),
+            })
+    return rows
+
+
+def compute_view_type_midlevel_associations(selected_views):
+    """Compute selection-weighted associations from a row-level event table."""
+    rows = []
+    if selected_views.empty:
+        return pd.DataFrame(rows)
+    for (run_name, epoch), block in selected_views.groupby(
+            ["run", "epoch"], sort=True):
+        rows.extend(view_type_midlevel_association_rows(
+            block, run_name, int(epoch)))
+    return pd.DataFrame(rows)
+
+
+def add_long_epoch_bins(df, n_bins):
+    """Add stable integer bin ids and labels to a long-form epoch table."""
+    out = df.copy()
+    epochs = np.sort(out["epoch"].dropna().unique().astype(float))
+    if not len(epochs):
+        out["epoch_bin"] = pd.Series(dtype=int)
+        out["epoch_label"] = pd.Series(dtype=str)
+        return out
+    if n_bins <= 0 or len(epochs) <= n_bins:
+        mapping = {epoch: idx for idx, epoch in enumerate(epochs)}
+        labels = {idx: str(int(epoch)) for epoch, idx in mapping.items()}
+        out["epoch_bin"] = out["epoch"].map(mapping).astype(int)
+        out["epoch_label"] = out["epoch_bin"].map(labels)
+        return out
+
+    edges = np.linspace(epochs.min() - 0.5, epochs.max() + 0.5, n_bins + 1)
+    out["epoch_bin"] = np.digitize(
+        out["epoch"].to_numpy(dtype=float), edges[1:-1], right=False)
+    labels = {
+        idx: (
+            f"{int(math.ceil(edges[idx] + 0.5))}-"
+            f"{int(math.floor(edges[idx + 1] - 0.5))}"
+        )
+        for idx in range(n_bins)
+    }
+    out["epoch_label"] = out["epoch_bin"].map(labels)
+    return out
+
+
+def mean_correlations(values):
+    """Average correlations on Fisher's z scale."""
+    values = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    if values.empty:
+        return np.nan
+    clipped = np.clip(values.to_numpy(dtype=float), -0.999999, 0.999999)
+    return float(np.tanh(np.mean(np.arctanh(clipped))))
+
+
+def draw_view_type_heatmap(matrix, row_labels, column_labels, title,
+                           colorbar_label, out_path, vmin, vmax, cmap):
+    label_width = min(4.0, 0.045 * max(len(str(label)) for label in row_labels))
+    fig, ax = plt.subplots(
+        figsize=(max(8, 0.7 * len(column_labels) + 2.8 + label_width),
+                 max(3.0, 0.48 * len(row_labels) + 1.8)),
+        constrained_layout=True,
+    )
+    im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax,
+                   interpolation="nearest")
+    ax.set_xticks(np.arange(len(column_labels)))
+    ax.set_xticklabels(column_labels, rotation=35, ha="right", fontsize=8)
+    ax.set_yticks(np.arange(len(row_labels)))
+    ax.set_yticklabels(row_labels, fontsize=8)
+    ax.set_xlabel("Selection epoch")
+    ax.set_title(title)
+    threshold = max(abs(vmin), abs(vmax)) * 0.55
+    for row_idx in range(matrix.shape[0]):
+        for col_idx in range(matrix.shape[1]):
+            value = matrix[row_idx, col_idx]
+            if not np.isfinite(value):
+                continue
+            color = "white" if abs(value) > threshold else "black"
+            ax.text(col_idx, row_idx, f"{value:+.2f}", ha="center",
+                    va="center", fontsize=7, color=color)
+    colorbar = fig.colorbar(im, ax=ax)
+    colorbar.set_label(colorbar_label)
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_view_type_midlevel_associations(associations, output_dir, n_bins):
+    if associations.empty:
+        return
+    binned = add_long_epoch_bins(associations, n_bins)
+    bin_order = sorted(binned["epoch_bin"].unique())
+    bin_labels = [
+        str(binned.loc[binned["epoch_bin"] == idx, "epoch_label"].iloc[0])
+        for idx in bin_order
+    ]
+
+    eta_source = binned.drop_duplicates(["run", "epoch", "metric"])
+    eta = eta_source.groupby(
+        ["metric", "epoch_bin"], sort=False)["eta_squared"].mean().unstack()
+    eta_matrix = eta.reindex(
+        index=PRIMARY_RAW_METRICS, columns=bin_order).to_numpy(dtype=float)
+    draw_view_type_heatmap(
+        eta_matrix,
+        [PRIMARY_RAW_LABELS[metric] for metric in PRIMARY_RAW_METRICS],
+        bin_labels,
+        "Exact view type association with selected-view mid-level features",
+        "Eta-squared (five view types; unsigned)",
+        os.path.join(output_dir, "view_type_midlevel_eta_squared_heatmap.png"),
+        0.0,
+        1.0,
+        "viridis",
+    )
+
+    point = binned.groupby(
+        ["metric", "view_type", "epoch_bin"], sort=False
+    )["point_biserial"].agg(mean_correlations).unstack()
+    combined_rows = [
+        (metric, view_type)
+        for metric in PRIMARY_RAW_METRICS
+        for view_type in VIEW_BUCKETS
+    ]
+    combined_matrix = point.reindex(
+        index=pd.MultiIndex.from_tuples(
+            combined_rows, names=["metric", "view_type"]),
+        columns=bin_order,
+    ).to_numpy(dtype=float)
+    combined_labels = [
+        f"{VIEW_BUCKET_LABELS[view_type]} | {PRIMARY_RAW_LABELS[metric]}"
+        for metric, view_type in combined_rows
+    ]
+    draw_view_type_heatmap(
+        combined_matrix,
+        combined_labels,
+        bin_labels,
+        "Signed view-type association with selected-view mid-level features",
+        "Point-biserial correlation (type vs all other types)",
+        os.path.join(output_dir, "view_type_midlevel_point_biserial_heatmap.png"),
+        -1.0,
+        1.0,
+        "RdBu_r",
+    )
+
+    means = binned.groupby(
+        ["metric", "view_type", "epoch_bin"], sort=False
+    )["family_mean"].mean().unstack()
+    for metric in PRIMARY_RAW_METRICS:
+        metric_point = point.loc[metric].reindex(
+            index=VIEW_BUCKETS, columns=bin_order).to_numpy(dtype=float)
+        draw_view_type_heatmap(
+            metric_point,
+            [VIEW_BUCKET_LABELS[view_type] for view_type in VIEW_BUCKETS],
+            bin_labels,
+            f"View type vs {PRIMARY_RAW_LABELS[metric]}",
+            "Point-biserial correlation (type vs all other types)",
+            os.path.join(
+                output_dir,
+                f"view_type_point_biserial_{metric}_heatmap.png"),
+            -1.0,
+            1.0,
+            "RdBu_r",
+        )
+
+        metric_means = means.loc[metric].reindex(
+            index=VIEW_BUCKETS, columns=bin_order).to_numpy(dtype=float)
+        finite = metric_means[np.isfinite(metric_means)]
+        if not finite.size:
+            continue
+        vmin, vmax = float(finite.min()), float(finite.max())
+        if math.isclose(vmin, vmax):
+            padding = max(abs(vmin) * 0.01, 1e-6)
+            vmin, vmax = vmin - padding, vmax + padding
+        draw_view_type_heatmap(
+            metric_means,
+            [VIEW_BUCKET_LABELS[view_type] for view_type in VIEW_BUCKETS],
+            bin_labels,
+            f"Raw selected-view {PRIMARY_RAW_LABELS[metric]} by view type",
+            f"Mean {PRIMARY_RAW_LABELS[metric]} (raw units)",
+            os.path.join(
+                output_dir,
+                f"view_type_raw_{metric}_heatmap.png"),
+            vmin,
+            vmax,
+            "viridis",
+        )
 
 
 def bin_epoch_df(df, n_bins):
@@ -596,7 +877,10 @@ def plot_value_heatmap(summary, out_path, bin_epochs, value_prefix):
     finite = matrix[np.isfinite(matrix)]
     if finite.size == 0:
         return
-    if value_prefix in {"lift", "effect"}:
+    if value_prefix == "effect":
+        vmin, vmax = -1.0, 1.0
+        cmap = "RdBu_r"
+    elif value_prefix == "lift":
         vmax = float(np.nanmax(np.abs(finite)))
         vmin = -vmax
         cmap = "RdBu_r"
@@ -617,15 +901,163 @@ def plot_value_heatmap(summary, out_path, bin_epochs, value_prefix):
     ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
     ax.set_xlabel("Training epoch")
     ax.set_title(f"Selected-view mid-level feature {value_prefix}")
-    cbar = fig.colorbar(im, ax=ax)
+    extend = "both" if value_prefix == "effect" and (
+        np.nanmin(finite) < vmin or np.nanmax(finite) > vmax
+    ) else "neither"
+    cbar = fig.colorbar(im, ax=ax, extend=extend)
     if value_prefix == "effect":
         cbar.set_label("(selected mean - baseline mean) / baseline std")
+        cbar.set_ticks([-1.0, 0.0, 1.0])
+        cbar.set_ticklabels(["-1", "0", "+1"])
     elif value_prefix == "lift":
         cbar.set_label("Selected mean - all-view baseline")
+        ticks = sorted({vmin, 0.0, vmax})
+        cbar.set_ticks(ticks)
+        cbar.set_ticklabels([f"{t:+.3f}" if t != 0 else "0" for t in ticks])
     else:
         cbar.set_label(value_prefix)
+        cbar.set_ticks([vmin, vmax])
+        cbar.set_ticklabels([f"{vmin:.3f}", f"{vmax:.3f}"])
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def _binned_run_values(raw, selected_col, baseline_col, n_bins):
+    """Average within run/bin first, preserving runs as the SEM unit."""
+    block = raw[["run", "epoch", selected_col, baseline_col]].copy()
+    block[selected_col] = pd.to_numeric(block[selected_col], errors="coerce")
+    block[baseline_col] = pd.to_numeric(block[baseline_col], errors="coerce")
+    unique_epochs = np.sort(block["epoch"].dropna().unique().astype(float))
+    if n_bins > 0 and len(unique_epochs) > n_bins:
+        edges = np.linspace(
+            unique_epochs.min() - 0.5,
+            unique_epochs.max() + 0.5,
+            n_bins + 1,
+        )
+        block["bin"] = np.digitize(
+            block["epoch"], edges[1:-1], right=False)
+        per_run = block.groupby(["run", "bin"], sort=True).agg(
+            epoch=("epoch", "mean"),
+            selected=(selected_col, "mean"),
+            baseline=(baseline_col, "mean"),
+        ).reset_index()
+        labels = {}
+        for bin_idx in sorted(per_run["bin"].unique()):
+            lo, hi = edges[int(bin_idx)], edges[int(bin_idx) + 1]
+            labels[int(bin_idx)] = (
+                f"{int(math.ceil(lo + 0.5))}-"
+                f"{int(math.floor(hi - 0.5))}"
+            )
+    else:
+        per_run = block.rename(columns={
+            selected_col: "selected",
+            baseline_col: "baseline",
+        })
+        per_run["bin"] = per_run["epoch"].astype(int)
+        labels = {int(epoch): str(int(epoch)) for epoch in unique_epochs}
+
+    rows = []
+    for bin_idx, values in per_run.groupby("bin", sort=True):
+        selected = values["selected"].dropna().to_numpy(dtype=float)
+        baseline = values["baseline"].dropna().to_numpy(dtype=float)
+
+        def mean_sem(array):
+            if not len(array):
+                return np.nan, np.nan
+            sem = (
+                float(np.std(array, ddof=1) / math.sqrt(len(array)))
+                if len(array) > 1 else 0.0
+            )
+            return float(np.mean(array)), sem
+
+        selected_mean, selected_sem = mean_sem(selected)
+        baseline_mean, baseline_sem = mean_sem(baseline)
+        rows.append({
+            "bin": int(bin_idx),
+            "epoch": float(values["epoch"].mean()),
+            "label": labels[int(bin_idx)],
+            "selected_mean": selected_mean,
+            "selected_sem": selected_sem,
+            "baseline_mean": baseline_mean,
+            "baseline_sem": baseline_sem,
+            "n_runs": int(values["run"].nunique()),
+        })
+    return pd.DataFrame(rows)
+
+
+def plot_primary_raw_values(raw, out_path, bin_epochs):
+    """Plot representative metrics in raw units with separate y-axes."""
+    available = [
+        metric for metric in PRIMARY_RAW_METRICS
+        if f"selected_{metric}" in raw.columns
+        and f"baseline_{metric}" in raw.columns
+    ]
+    if not available:
+        return
+
+    fig, axes = plt.subplots(
+        len(available), 1,
+        figsize=(9, max(6.5, 2.5 * len(available))),
+        sharex=True,
+    )
+    if len(available) == 1:
+        axes = [axes]
+    tick_values = None
+    for axis, metric in zip(axes, available):
+        values = _binned_run_values(
+            raw,
+            f"selected_{metric}",
+            f"baseline_{metric}",
+            bin_epochs,
+        )
+        if values.empty:
+            continue
+        tick_values = values
+        x = np.arange(len(values))
+        selected_mean = values["selected_mean"].to_numpy(dtype=float)
+        selected_sem = values["selected_sem"].to_numpy(dtype=float)
+        baseline_mean = values["baseline_mean"].to_numpy(dtype=float)
+        baseline_sem = values["baseline_sem"].to_numpy(dtype=float)
+
+        axis.plot(x, selected_mean, color="#0072B2", lw=2.0, marker="o",
+                  ms=3.5, label="Selected views")
+        axis.fill_between(
+            x,
+            selected_mean - selected_sem,
+            selected_mean + selected_sem,
+            color="#0072B2",
+            alpha=0.2,
+            label="Selected ±SEM",
+        )
+        axis.plot(x, baseline_mean, color="#666666", lw=1.5, ls="--",
+                  label="Same-instance all-view baseline")
+        axis.fill_between(
+            x,
+            baseline_mean - baseline_sem,
+            baseline_mean + baseline_sem,
+            color="#666666",
+            alpha=0.12,
+        )
+        axis.set_ylabel("Raw value")
+        axis.set_title(PRIMARY_RAW_LABELS[metric], loc="left", fontsize=10)
+        axis.grid(alpha=0.25)
+
+    if tick_values is None:
+        plt.close(fig)
+        return
+    axes[0].legend(loc="best", fontsize=8)
+    axes[-1].set_xticks(np.arange(len(tick_values)))
+    axes[-1].set_xticklabels(
+        tick_values["label"], rotation=35, ha="right")
+    axes[-1].set_xlabel("Training epoch")
+    fig.suptitle(
+        "Selected-view projected-shape metrics "
+        "(raw values, mean ±SEM across runs)",
+        y=0.995,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180)
     plt.close(fig)
 
 
@@ -707,7 +1139,11 @@ def main():
 
     if not args.selection_dir:
         return
-    raw, summary = aggregate_selected_features(view_df, args.selection_dir)
+    raw, summary, associations = aggregate_selected_features(
+        view_df,
+        args.selection_dir,
+        compute_view_type_association=not args.skip_view_type_association,
+    )
     raw_path = os.path.join(args.output_dir, "selected_midlevel_by_run_epoch.csv")
     summary_path = os.path.join(args.output_dir, "selected_midlevel_summary.csv")
     raw.to_csv(raw_path, index=False)
@@ -718,20 +1154,34 @@ def main():
         range_path = os.path.join(args.output_dir, "midlevel_metric_ranges.csv")
         write_metric_range_diagnostics(view_df, summary, range_path)
         print(f"Saved: {range_path}")
-        plot_value_heatmap(summary,
-                           os.path.join(args.output_dir, "midlevel_lift_heatmap.png"),
-                           args.bin_epochs,
-                           value_prefix="lift")
-        plot_value_heatmap(summary,
-                           os.path.join(args.output_dir, "midlevel_effect_heatmap.png"),
-                           args.bin_epochs,
-                           value_prefix="effect")
+        for obsolete in [
+            "midlevel_lift_heatmap.png",
+            "midlevel_effect_heatmap.png",
+        ]:
+            obsolete_path = os.path.join(args.output_dir, obsolete)
+            if os.path.exists(obsolete_path):
+                os.remove(obsolete_path)
+        plot_primary_raw_values(
+            raw,
+            os.path.join(
+                args.output_dir,
+                "midlevel_selected_raw_primary_metrics.png",
+            ),
+            args.bin_epochs,
+        )
         plot_group_curve_figures(summary, args.output_dir, args.bin_epochs,
                                  value_prefix="selected")
         plot_group_curve_figures(summary, args.output_dir, args.bin_epochs,
                                  value_prefix="lift")
         plot_group_curve_figures(summary, args.output_dir, args.bin_epochs,
                                  value_prefix="effect")
+        if not associations.empty:
+            association_path = os.path.join(
+                args.output_dir, "view_type_midlevel_associations.csv")
+            associations.to_csv(association_path, index=False)
+            print(f"Saved: {association_path}")
+            plot_view_type_midlevel_associations(
+                associations, args.output_dir, args.bin_epochs)
         print(f"Saved plots under: {args.output_dir}")
 
 

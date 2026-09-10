@@ -21,6 +21,7 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "${ROOT_DIR}/../MVSelect-main/experiment_arch.sh"
 
 # --- Config (override via env vars) ---
 DATASET="${DATASET:-rgb}"
@@ -39,21 +40,8 @@ COMPARISON_SET="${COMPARISON_SET:-freeze}"  # freeze | selector_limit
 
 # --- Experiment list (EDIT ME) ---
 # Each entry: "<exp_folder_basename>[:<label>]"
-FREEZE_EXPS=(
-    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
-    "freeze_10_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_10"
-    "freeze_20_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_20"
-    "freeze_30_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_30"
-    "freeze_40_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_40"
-    "freeze_50_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_50"
-)
-SELECTOR_LIMIT_EXPS=(
-    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
-    "resnet18steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_expanded"
-    "resnet18steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened"
-    "resnet18steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened_remainder"
-    "resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_remainder"
-)
+FREEZE_EXPS=("${MVSELECT_FREEZE_EXPS[@]}")
+SELECTOR_LIMIT_EXPS=("${MVSELECT_SELECTOR_LIMIT_EXPS[@]}")
 case "${COMPARISON_SET}" in
     freeze)
         EXPS=("${FREEZE_EXPS[@]}")
@@ -73,6 +61,7 @@ echo "=========================================="
 echo "Per-experiment VGGT pipeline sweep"
 echo "  COMPARISON_SET     = ${COMPARISON_SET}"
 echo "  DATASET            = ${DATASET}"
+echo "  ARCH               = ${ARCH}"
 echo "  GPUS per exp       = ${GPUS}"
 echo "  MODELS             = ${MODELS}"
 echo "  VIEW_TYPE          = ${VIEW_TYPE}"
@@ -104,7 +93,11 @@ for spec in "${EXPS[@]}"; do
         label="${spec}"
     fi
     selection_dir="${MVSELECT_META_LOGS}/${folder}"
-    output_dir="${ROOT_DIR}/results/views/v${VIEW_TYPE}/${label}"
+    if [ "${ARCH}" = "resnet18" ]; then
+        output_dir="${ROOT_DIR}/results/views/v${VIEW_TYPE}/${label}"
+    else
+        output_dir="${ROOT_DIR}/results/views/v${VIEW_TYPE}/${ARCH}/${label}"
+    fi
 
     echo
     echo "------------------------------------------------------------------"
@@ -125,6 +118,7 @@ for spec in "${EXPS[@]}"; do
     fi
 
     SELECTION_DIR="${selection_dir}" \
+    ARCH="${ARCH}" \
     OUTPUT_DIR="${output_dir}" \
     GPUS="${GPUS}" \
     MODELS="${MODELS}" \
@@ -144,10 +138,14 @@ done
 
 echo "=========================================="
 echo "Sweep finished."
-echo "Per-experiment artifacts under: ${ROOT_DIR}/results/views/v${VIEW_TYPE}/<label>/"
+if [ "${ARCH}" = "resnet18" ]; then
+    echo "Per-experiment artifacts under: ${ROOT_DIR}/results/views/v${VIEW_TYPE}/<label>/"
+else
+    echo "Per-experiment artifacts under: ${ROOT_DIR}/results/views/v${VIEW_TYPE}/${ARCH}/<label>/"
+fi
 echo
 echo "Next step — overlay the experiments' curves:"
-echo "    ./scripts/run_aggregate_vggt_confidence.sh"
+echo "    ARCH=${ARCH} ./scripts/run_aggregate_vggt_confidence.sh"
 echo "(make sure that script's SUMMARIES list matches the labels used here.)"
 if [ "${fail}" -ne 0 ]; then
     echo

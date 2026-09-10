@@ -77,9 +77,11 @@ def aggregate_feat(feat, selection, aggregation='mean'):
 
 
 class CamSelect(nn.Module):
-    def __init__(self, num_cam, hidden_dim, kernel_size=1, aggregation='max'):
+    def __init__(self, num_cam, hidden_dim, kernel_size=1, aggregation='max',
+                 selected_only_output=False):
         super().__init__()
         self.aggregation = aggregation
+        self.selected_only_output = bool(selected_only_output)
         if kernel_size == 1:
             stride, padding = 1, 0
         elif kernel_size == 3:
@@ -126,7 +128,16 @@ class CamSelect(nn.Module):
             action = Categorical(action_prob).sample()
 
         action = F.one_hot(action, num_classes=N).bool()
-        overall_feat = aggregate_feat(feat, init_prob + action, self.aggregation)
+        if self.selected_only_output:
+            # `action` is one-hot. Summation extracts the selected view exactly;
+            # max pooling against zeroed unselected slots would not be exact for
+            # feature channels that can be negative.
+            overall_feat = (
+                feat * action[:, :, None, None, None]
+            ).sum(dim=1)
+        else:
+            overall_feat = aggregate_feat(
+                feat, init_prob + action, self.aggregation)
         # return overall_feat, (log_prob, state_value, action, entropy)
         return overall_feat, (torch.zeros([B], device=feat.device), action_value,
                               action, torch.zeros([B], device=feat.device))

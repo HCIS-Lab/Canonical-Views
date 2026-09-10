@@ -258,6 +258,7 @@ class ClassifierTrainer(BaseTrainer):
         view_class_save = []
         selected_feature_save = []
         selected_class_save = []
+        selected_instance_save = []
         selected_init_cam_save = []
         selected_mask_save = []
 
@@ -299,13 +300,21 @@ class ClassifierTrainer(BaseTrainer):
                         outputs.append(output)
                         actions.append(action)
                         if feature_file_name and (epoch%10==0 or epoch < 20):
-                            selected_mask = init_cam[k].repeat([B, 1]).to(feat.device).bool()
+                            if getattr(self.args, 'active_single_view', False):
+                                selected_mask = torch.zeros(
+                                    [B, N], dtype=torch.bool,
+                                    device=feat.device)
+                            else:
+                                selected_mask = init_cam[k].repeat(
+                                    [B, 1]).to(feat.device).bool()
                             for step_action in action:
                                 selected_mask = selected_mask | step_action.bool()
+                            initial_cam_idx = int(init_cam[k].argmax().item())
                             for b in range(B):
                                 selected_feature_save.append(overall_feat[b].detach().cpu().numpy())
                                 selected_class_save.append(np.array([tgt[b].item()]))
-                                selected_init_cam_save.append(np.array([k]))
+                                selected_instance_save.append(np.array([meta['id_list'][0][b]]))
+                                selected_init_cam_save.append(np.array([initial_cam_idx]))
                                 selected_mask_save.append(selected_mask[b].detach().cpu().numpy())
                         # print(K) 20
                         # print(N) 20
@@ -432,11 +441,17 @@ class ClassifierTrainer(BaseTrainer):
                 view_index=view_index_save,
                 view_type=view_type_save,
                 view_class=view_class_save,
+                recognition_input=np.asarray(
+                    'selected_view_only'
+                    if getattr(self.args, 'active_single_view', False)
+                    else 'initial_plus_selected_views'
+                ),
             )
             if selected_feature_save:
                 save_kwargs.update(
                     selected_features=np.concatenate(selected_feature_save, axis=0),
                     selected_class=np.concatenate(selected_class_save, axis=0),
+                    selected_instance=np.concatenate(selected_instance_save, axis=0),
                     selected_init_cam=np.concatenate(selected_init_cam_save, axis=0),
                     selected_mask=np.stack(selected_mask_save, axis=0),
                 )

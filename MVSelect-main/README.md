@@ -1,5 +1,8 @@
 # Learning to Select Camera Views: Efficient Multiview Understanding at Few Glances
 
+Publication-ready caption templates for the generated analysis figures are
+collected in [`../PAPER_FIGURE_CAPTIONS.md`](../PAPER_FIGURE_CAPTIONS.md).
+
 ## Overview
 We release code for **MVSelect**, a view selection module for efficient multiview understanding. Parallel to reducing the image resolution or using lighter network backbones, the proposed approach reduces the computational cost for multiview understanding by limiting the number of views considered. 
 
@@ -16,6 +19,56 @@ Please install dependencies with
 ```
 pip install -r requirements.txt
 ```
+
+### Backbone architectures
+
+`--arch` accepts `resnet18`, `vit`, and `tinyvit`. The `tinyvit` option uses
+timm's `tiny_vit_5m_224.dist_in22k_ft_in1k` backbone (224-pixel input,
+320-dimensional pooled feature) with ImageNet-22k distillation followed by
+ImageNet-1k fine-tuning. `timm==0.9.16` is included in `requirements.txt`.
+
+All training arguments work with TinyViT:
+
+```bash
+python main.py --arch tinyvit --epochs 100 --non_roll --steps 5 \
+  --num_train_instances 25 --dataset rgb --batch_size 6 --lr 0.0005 \
+  --save_feature --save_every_epoch 1 --skip_stage1
+```
+
+The architecture is encoded in every training path and checkpoint lookup:
+
+```text
+logs/rgb/tinyvitsteps5_train_ins25_..._<timestamp>/
+meta_logs/rgb/tinyvitsteps5_train_ins25_..._e100/
+logs/rgb/tinyvit_performance.txt
+logs/rgb/tinyvit_zero_shot_view_test/
+downstream_logs/tinyvit/...
+```
+
+This prevents TinyViT checkpoints, feature dumps, selections, and plots from
+sharing a path with ResNet. Feature analyses infer the saved feature width
+from each NPZ, so `meta_logs/` may contain 512-dimensional ResNet,
+768-dimensional ViT, and 320-dimensional TinyViT experiments together.
+
+Analysis wrappers accept the same architecture through `ARCH`:
+
+```bash
+ARCH=tinyvit GPUS=4 COMPARISON_SET=freeze ./run_temporal_test_all.sh
+ARCH=tinyvit COMPARISON_SET=freeze ./run_aggregate_temporal_tests.sh
+ARCH=tinyvit COMPARISON_SET=freeze ./run_cluster_metrics_pipeline.sh
+ARCH=tinyvit COMPARISON_SET=freeze ./run_midlevel_shape_features_pipeline.sh
+ARCH=tinyvit GPU_ID=0 ./run_selector_score_analysis.sh
+ARCH=tinyvit GPU_ID=0 ./run_view_contribution_pipeline.sh
+ARCH=tinyvit GPU_ID=0 ./run_single_multiview_midlevel_analysis.sh
+ARCH=tinyvit GPU_ID=0 COMPARISON_SET=freeze \
+  ./run_mochi_zero_shot_feature_oddity.sh
+python zero_shot_view_type_test.py --arch tinyvit --dataset rgb --non_roll
+```
+
+For backward compatibility, ResNet comparison folders keep their existing
+names. Non-ResNet comparison folders append the architecture, for example
+`compare/cluster_metrics_freeze_sweep_tinyvit/` and
+`compare/steps5_freeze_sweep_tinyvit/`.
 
 ## Data Preparation
 
@@ -66,6 +119,98 @@ You can download the checkpoints at this [link](https://1drv.ms/u/s!AtzsQybTubHf
 This fork adds selector restrictions, aggregation/plot outputs, and downstream
 probes. See the companion repo `human_multiview-main/` for VGGT/Pi3/DINOv2-based
 probes that consume the `selection.json` files produced here.
+
+### Active single-view control
+
+The active single-view control tests whether a learned view preference still
+emerges when recognition never aggregates multiple views. It uses one selector
+action:
+
+| selector context | classifier input | reward |
+|---|---|---|
+| random initial view | selected view only (N=1) | `loss(initial) - loss(selected)` |
+
+The initial view remains the policy's observation in both conditions. In the
+active-single condition it is only an action-independent reward baseline and
+does not contribute to the classification loss or classifier gradients. This
+is preferable to `--steps 0`, which has no learned action policy. Training
+samples the initial camera uniformly. Each per-epoch test evaluates every
+possible initial camera and pools those results, so the reported bias is not
+tied to one lucky initial view.
+
+Here N=1 denotes the classifier input. The image-conditioned policy must first
+observe an initial view before choosing that classifier view, so the sensing
+procedure still captures a scouting image. A system limited to one captured
+image in total cannot make an image-conditioned active choice; it would instead
+learn an open-loop camera prior.
+
+Train five seeds on one GPU and generate the figures:
+
+```bash
+SINGLE_GPU=0 SEEDS="0 1 2 3 4" \
+  ./run_active_single_view_experiment.sh
+```
+
+Both networks train jointly from the same seeded ImageNet backbone
+initialization. Useful overrides include:
+
+```bash
+# Save feature dumps in addition to selections and checkpoints.
+SAVE_FEATURE=1 ./run_active_single_view_experiment.sh
+
+# Regenerate plots without training.
+./run_active_single_view_comparison.sh
+
+# Optional matched N=2 control; not required for the single-view analysis.
+TRAIN_PAIR=1 PAIR_GPU=1 SINGLE_GPU=0 INCLUDE_PAIR=1 \
+  ./run_active_single_view_experiment.sh
+```
+
+`--active_single_view` is valid only with `--steps 1`. It is encoded as
+`steps1_active_single_` in `logs/` and `meta_logs/`, so its checkpoints,
+selections, and metadata cannot collide with the ordinary `steps1` run.
+
+The comparison is written to `compare/active_single_view_bias/` (with an
+architecture suffix for non-ResNet backbones):
+
+| File | What it shows |
+|---|---|
+| `active_single_view_types.png` | Exact view-type selection shares with availability baselines and run-level SEM. |
+| `active_single_families.png` | Expanded-family, foreshortened-family, and remainder shares. |
+| `active_single_view_bias_magnitude.png` | Total variation distance between the selected-view distribution and dataset availability; 0 means no aggregate selection bias. |
+| `active_single_recognition_accuracy.png` | Accuracy when the classifier receives only the selected view. |
+| `selection_bias_runs.csv` | Run-level values underlying all plots. |
+
+If active single-view develops a consistent directional preference and a
+nonzero distance from the availability prior, multiview feature pooling is not
+necessary for the bias. This control remains descriptive: repeat it across
+seeds and report both direction-specific shares and overall bias magnitude.
+
+### Controlled policy-replay representation experiment
+
+`train_downstream.py` pools a range of selection epochs into one static top-K
+dataset and cannot test policy-history effects. The controlled replacement is
+`run_policy_replay_experiment.sh`, which trains recognition networks from an
+exactly shared initialization under frozen-early, final-from-start, naturally
+evolving, temporally shuffled, family-matched replacement, and random-view
+training policies. Three additional controls use random views for the first
+10, 20, or 30 epochs and then rejoin the naturally evolving no-freeze policy
+at the matching absolute epoch. It also
+evaluates the original jointly trained no-freeze model as a clearly marked
+external reference. All conditions use identical held-out N=5 inputs, and the
+output includes accuracy, class silhouette, linear CKA, prediction
+disagreement, and separate matched-control/reference audits.
+To avoid unreadable all-condition trajectories, aggregation also writes raw
+and difference-from-evolving heatmaps plus focused policy-history,
+random-warm-up, and view-identity curve panels with shared metric scales.
+
+```bash
+ARCH=resnet18 GPUS=4 SEEDS="0 1 2" \
+  ./run_policy_replay_experiment.sh
+```
+
+See [`README_policy_replay.md`](README_policy_replay.md) for protocol details,
+direct commands, output definitions, and interpretation.
 
 ### Restrict selector candidates by view family
 
@@ -127,8 +272,8 @@ plots into each experiment folder:
 
 | File | What it shows |
 |---|---|
-| `aggregated_view_ratios.png` | The original 5-bucket selection-ratio curves (Expanded / Expanded-like / Foreshortened / Foreshortened-like / Remainder) over training. |
-| `aggregated_view_family_ratios.png` | **NEW**. Collapsed 2-curve view: `expanded family = expanded + Expanded-like` (green) vs `foreshortened family = Foreshortened + Foreshortened-like` (red), with dashed horizontal lines at each group's chance-baseline share (combined: 17.5% / 8.7% / 73.8% of available views) and a vertical line marking the first epoch where expanded > foreshortened. ±SEM shaded across runs. |
+| `aggregated_view_ratios.png` | Five exact view-type selection-share curves (Expanded / Expanded-like / Foreshortened / Foreshortened-like / Remainder), with each type's availability baseline in the legend and ±SEM shaded across runs. |
+| `aggregated_view_family_ratios.png` | Collapsed family view: `expanded family = Expanded + Expanded-like` (green) vs `foreshortened family = Foreshortened + Foreshortened-like` (red), with each family's availability baseline in the legend, ±SEM shaded across runs, and a vertical line marking the first epoch where expanded-family share exceeds foreshortened-family share. The combined baselines are 17.5%, 8.7%, and 73.8% for expanded family, foreshortened family, and remainder. |
 | `aggregated_view_family_lift.png` | **NEW**. Same collapsed family comparison plotted as **lift over chance** (`observed_share / available_share`). Horizontal reference at `1.0` = uniform random. Magnitude-aware view of preference strength independent of bucket sizes. |
 | `aggregated_per_class_accuracy.png` | **RESTYLED**. Per-class accuracy over epochs as a `class × epoch` viridis heatmap (was: 32 overlapping line curves). Much easier to spot which classes the agent is learning earliest. |
 | `aggregated_accuracy.png`, `_3.png`, `_5.png` | Per-view-type accuracies for N=1/3/5 view sets (unchanged). |
@@ -380,7 +525,8 @@ effect_metric = lift_metric / std(metric over all candidate views of the same ob
 ```
 
 This is easier to compare across metrics whose raw units have very different
-ranges.
+ranges. Effect heatmaps use a fixed `[-1, 1]` color scale; values outside that
+range are saturated.
 
 Commands:
 
@@ -403,6 +549,21 @@ COMPARISON_SET=selector_limit ./run_midlevel_shape_features_pipeline.sh
 VALUE=selected STYLE=both ./run_midlevel_shape_features_pipeline.sh
 GROUP_VALUE=selected ./run_midlevel_shape_features_pipeline.sh
 GROUP_VALUE=lift ./run_midlevel_shape_features_pipeline.sh
+
+# Visual diagnostics: 10 views per test instance.
+python3 visualize_midlevel_extractions.py
+
+# Raw 3D feature space: every view of every test object.
+./run_midlevel_feature_space_3d.sh
+
+# The same raw feature space for one object class.
+CLASS_NAME=airplane ./run_midlevel_feature_space_3d.sh
+
+# One primary/opposite/rear/combined figure bundle per airplane instance.
+CLASS_NAME=airplane PER_INSTANCE=1 ./run_midlevel_feature_space_3d.sh
+
+# One combined figure containing one evaluated instance from every class.
+ONE_INSTANCE_PER_CLASS=1 ./run_midlevel_feature_space_3d.sh
 ```
 
 Outputs:
@@ -413,21 +574,60 @@ Outputs:
   row per selection file and epoch.
 - `<selection_dir>/midlevel_features/selected_midlevel_summary.csv` — averaged
   over selection files per epoch.
+- `<selection_dir>/midlevel_features/view_type_midlevel_associations.csv` —
+  five-way eta-squared and signed one-vs-rest point-biserial associations for
+  ellipse aspect ratio, bilateral symmetry, and edge entropy.
 - `<selection_dir>/midlevel_features/midlevel_metric_ranges.csv` — per-view raw
   ranges versus epoch-level selected/lift/effect ranges for sanity checking.
-- `<selection_dir>/midlevel_features/midlevel_lift_heatmap.png` — per-experiment
-  selected-minus-baseline heatmap.
-- `<selection_dir>/midlevel_features/midlevel_effect_heatmap.png` — per-experiment
-  standardized lift heatmap.
+- `<selection_dir>/midlevel_features/midlevel_selected_raw_primary_metrics.png`
+  — per-experiment raw ellipse aspect ratio, bilateral symmetry, and edge
+  entropy in separate panels, with selected-view mean ±SEM and the raw
+  same-instance all-view baseline. Separate y-axes avoid comparing incompatible
+  raw units through one shared heatmap scale.
 - `<selection_dir>/midlevel_features/midlevel_axis_visibility_selected_curves.png`
   — selected axis-visibility metrics over epochs.
 - `<selection_dir>/midlevel_features/midlevel_symmetry_part_organization_selected_curves.png`
   — selected symmetry / part-organization metrics over epochs.
 - `<selection_dir>/midlevel_features/midlevel_edge_organization_selected_curves.png`
   — selected edge-organization metrics over epochs.
+- `logs/midlevel_visual_samples/test_v10/<class>/<instance>_midlevel_extractions.png`
+  — contact sheets showing original render, mask with Zhang-Suen skeleton,
+  Sobel gradient magnitude, and Sobel gradient orientation for sampled test
+  views. Row labels include `ellipse_aspect_ratio`, `bilateral_symmetry`, and
+  `edge_entropy`; the same values are saved in `visualization_index.csv`.
+- `compare/midlevel_feature_space_3d/test/all_test_views_midlevel_3d_primary.png`,
+  `all_test_views_midlevel_3d_opposite.png`, and
+  `all_test_views_midlevel_3d_rear.png` — every finite candidate test view in
+  raw ellipse-aspect-ratio, bilateral-symmetry, and edge-entropy coordinates,
+  with epoch-100 no-freeze selections highlighted by default over a neutral
+  candidate cloud. Each angle uses a separate full-size canvas;
+  `all_test_views_midlevel_3d_angles.png` retains the concatenated view and
+  `all_test_views_midlevel_3d.png` aliases the primary view. With
+  `CLASS_NAME=<class> PER_INSTANCE=1`, the same figure bundle is generated in
+  one folder for each of the five evaluated instance IDs present in the saved
+  exact rollout feature dump, rather than all physical instances in the class
+  directory. Legacy dumps without `selected_instance` are supported by
+  reconstructing the missing IDs from the unshuffled loader's first-five
+  sorted instance order; selected camera indices still come from the exact
+  saved masks. The default overlay is the five agent actions from initial
+  camera 0 in the first saved run; the initial camera itself is excluded. Set
+  `SELECTION_DIR` and `SELECTION_EPOCH` to change the
+  overlay, or `HIGHLIGHT_SELECTED=0` to restore exact-family colors. The folder
+  also contains all-point and selected-point CSVs, family summaries, and a
+  count/selection audit.
+- `compare/midlevel_feature_space_3d/test/one_instance_per_class/` — the same
+  combined angle figures restricted to one deterministic evaluated object from
+  each of the 32 classes. All 114 candidate views and the five exact selected
+  views are retained per object; `one_instance_per_class_index.csv` identifies
+  the chosen object in each class.
 - `compare/midlevel_shape_<comparison>_sweep/*_heatmap.png` — cross-experiment
   freeze or selector-limit plots. With defaults, these are standardized
-  `effect_<metric>_heatmap.png` files.
+  `effect_<metric>_heatmap.png` files on a fixed `[-1, 1]` color scale.
+- `compare/midlevel_shape_<comparison>_sweep/view_type_eta_squared_*`,
+  `view_type_point_biserial_*`, and `view_type_raw_*` — cross-experiment
+  association strength, signed view-type direction, and raw view-type means for
+  the three primary mid-level features. These new association outputs are
+  intentionally restricted to the `no_freeze` experiment.
 - `compare/midlevel_shape_<comparison>_sweep/selected_axis_visibility_curves.png`,
   `selected_symmetry_part_organization_curves.png`, and
   `selected_edge_organization_curves.png` — cross-experiment grouped curve
@@ -444,6 +644,127 @@ Outputs:
 With the wrapper defaults, one comparison folder is the freeze sweep
 (`no_freeze` vs `freeze_10` through `freeze_50`) and the other is the
 selector-limit sweep (`select_all` vs limited selector families).
+
+### Selector score versus projected-shape structure
+
+`selector_score_analysis.py` replays exact test rollouts with matching
+`model_e<E>.pth` checkpoints and relates every valid candidate's DQN action
+value to ellipse aspect ratio, bilateral symmetry, medial-axis symmetry, and
+edge entropy. The combined heatmaps include all four metrics, while separate
+axis-visibility, symmetry, and edge-organization heatmaps provide focused views.
+Timestamped runs are aggregated only when their complete untimestamped
+experiment name matches, so freeze and `selview_*` settings are never mixed.
+
+```bash
+# Default no-freeze experiment, epochs 10,20,...,100, physical GPU 0.
+GPU_ID=0 ./run_selector_score_analysis.sh
+
+# One exact selector-limit setting; all matching timestamped runs are pooled.
+EXPERIMENTS="resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100" \
+GPU_ID=1 ./run_selector_score_analysis.sh
+```
+
+The primary figure is `selector_score_correlation_heatmap.png`: positive cells
+mean candidates with more of a cue receive higher selector scores within the
+same decision. `selector_choice_percentile_heatmap.png` shows whether the
+greedy choice lies above or below the candidate median for each cue. Raw
+reconstructed `[rollout, step, view]` score tensors are retained for audit.
+Definitions, commands, outputs, and caveats are in
+[`README_selector_score_analysis.md`](README_selector_score_analysis.md).
+
+### Selected-view contribution to multiview recognition
+
+`view_contribution_analysis.py` tests whether the mid-level structure visible
+in one selected view predicts how much that view contributes to the multiview
+classification. For every agent-selected set `S` and selected view `vi`, it
+computes:
+
+```text
+delta_M(vi) = M(S) - M(S without vi)
+
+delta_replace_M(vi, u) = M(S) - M((S without vi) union {u})
+```
+
+The exact selected sets come from `selected_mask` in `feature_<epoch>.npz`;
+the flattened selection JSON does not preserve individual rollout membership.
+The two independently reported objectives are the correct-class logit and
+top-1 minus top-2 prediction margin. Positive delta means that removing the
+view weakened that objective. By default, `S` contains the agent actions only;
+`CONTEXT=with_initial` retains the rollout's initial input while each agent
+view is removed. For replacement, `u` is sampled from views outside the
+complete saved selection mask, so neither another selected view nor the initial
+input is used as the substitute.
+
+The script correlates each delta with `ellipse_aspect_ratio`,
+`bilateral_symmetry`, and `edge_entropy`. Replacement reports an absolute
+selected-cue analysis and a separate change-versus-change analysis using
+`cue(selected) - cue(replacement)`. Exact view family is categorical, so it is
+analyzed with per-family mean contributions and eta-squared rather than an
+arbitrary numeric family encoding. Detailed definitions, outputs, and caveats
+are in
+[`README_view_contribution.md`](README_view_contribution.md).
+
+```bash
+# One experiment; default exact epochs are 10,20,...,100.
+python3 view_contribution_analysis.py \
+  --selection_dir meta_logs/rgb/<experiment> \
+  --non_roll \
+  --epoch_stride 10
+
+# Run only the no-freeze experiment on physical GPU 2.
+GPU_ID=2 ./run_view_contribution_pipeline.sh
+
+# Use every initial camera (the wrapper defaults to 10 evenly spaced cameras).
+NUM_INITIAL_CAMS=0 GPU_ID=2 ./run_view_contribution_pipeline.sh
+
+# Draw ten deterministic unselected replacements per rollout.
+REPLACEMENT_SAMPLES=10 REPLACEMENT_SEED=42 GPU_ID=2 \
+  ./run_view_contribution_pipeline.sh
+
+# Use model_e<t>.pth instead of holding the final classifier fixed.
+PER_EPOCH_CHECKPOINT=1 GPU_ID=2 \
+  ./run_view_contribution_pipeline.sh
+```
+
+The wrapper targets only the no-freeze experiment; override
+`EXPERIMENT=<folder>` only when its folder name differs. Outputs use a tagged
+subfolder such as
+`<selection_dir>/view_contribution/agent_only_final_classifier_cams_10_repl5_seed42/`
+so different replacement settings do not overwrite each other.
+
+### Single- versus five-view mid-level cue importance
+
+`single_multiview_midlevel_analysis.py` compares the no-freeze final classifier
+on every single candidate view, random five-view sets, and exact agent-selected
+five-view sets from epoch 100. Single-view outputs are centered by the same
+object's all-view mean; five-view outputs are centered by the same object's
+random-five mean. This makes object-balanced correlations and grouped
+cross-validated explained variance comparable across input sizes without
+equating their raw logit scales. Matching timestamped training runs are
+averaged within each object, so repeated runs do not multiply the effective
+object count.
+
+```bash
+GPU_ID=0 ./run_single_multiview_midlevel_analysis.sh
+
+# Smoke test.
+LIMIT_INSTANCES=10 RANDOM_SETS=20 GPU_ID=0 \
+  ./run_single_multiview_midlevel_analysis.sh
+
+# Re-render existing CSV results only and refresh all plot labels.
+PLOT_ONLY=1 ./run_single_multiview_midlevel_analysis.sh
+
+# Compute only the raw five-family cue means; skip classifier evaluation.
+FAMILY_MEANS_ONLY=1 ./run_single_multiview_midlevel_analysis.sh
+```
+
+The analysis also measures the held-out R-squared gained by adding exact view
+family composition after ellipse aspect ratio, bilateral symmetry, and edge
+entropy. `all_candidate_view_family_midlevel_means.png` provides the simpler
+raw comparison: each panel averages one cue within exact view family and object,
+then reports the mean and SEM across test objects. Details and output
+definitions are in
+[`README_single_multiview_midlevel.md`](README_single_multiview_midlevel.md).
 
 ### Temporal selection test — manipulation robustness + margin stability (`temporal_selection_test.py`)
 
@@ -599,6 +920,7 @@ python3 aggregate_temporal_tests.py \
 # Or use the bash wrapper for the standard comparison sets
 ./run_aggregate_temporal_tests.sh
 COMPARISON_SET=selector_limit ./run_aggregate_temporal_tests.sh
+ARCH=tinyvit COMPARISON_SET=freeze ./run_aggregate_temporal_tests.sh
 ```
 
 Outputs (in `--output_dir`):

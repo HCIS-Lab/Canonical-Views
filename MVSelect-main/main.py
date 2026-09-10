@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 from src.datasets import *
 from src.models.mvdet import MVDet
 from src.models.mvcnn import MVCNN
+from src.models.architectures import SUPPORTED_ARCHITECTURES
 from src.utils.logger import Logger
 from src.utils.draw_curve import draw_curve, plot
 from src.utils.str2bool import str2bool
@@ -123,6 +124,7 @@ def main(args):
 
     # logging
     select_settings = f'steps{args.steps}_'
+    active_single_settings = 'active_single_' if args.active_single_view else ''
     selector_view_settings = (
         f'selview_{args.selector_view_limit}_'
         if args.steps and args.selector_view_limit != 'all'
@@ -143,10 +145,11 @@ def main(args):
         logdir = logdir + 'freeze_' + str(args.freeze_epoch) + '_'
     logdir = logdir + args.arch +\
              f'{select_settings if args.steps else ""}' \
+             f'{active_single_settings}' \
              f'{selector_view_settings}' \
              f'train_ins{args.num_train_instances}_lr{args.lr}{lr_settings}_e{args.epochs}_' \
              f'{time:%Y-%m-%d_%H-%M-%S}' if not args.eval \
-        else f'logs/{args.dataset}/EVAL_{args.resume}'
+        else f'logs/{args.dataset}/EVAL_{args.arch}_{args.resume}'
     os.makedirs(logdir, exist_ok=True)
 
     sys.stdout = Logger(os.path.join(logdir, str(exp_name)+ '_log.txt'), )
@@ -162,6 +165,7 @@ def main(args):
         if args.freeze_epoch != 100:
             meta_log = meta_log  + 'freeze_' + str(args.freeze_epoch) + '_'
         meta_log = meta_log + args.arch +f'{select_settings if args.steps else ""}' \
+                 f'{active_single_settings}' \
                  f'{selector_view_settings}' \
                  f'train_ins{args.num_train_instances}_lr{args.lr}{lr_settings}_e{args.epochs}' 
         os.makedirs(meta_log, exist_ok=True)
@@ -169,7 +173,13 @@ def main(args):
 
     # model
     if args.task == 'mvcnn':
-        model = MVCNN(train_set, args.arch, args.aggregation, args.dataset).cuda()
+        model = MVCNN(
+            train_set,
+            args.arch,
+            args.aggregation,
+            args.dataset,
+            active_single_view=args.active_single_view,
+        ).cuda()
         # model= nn.DataParallel(model)
 
     # load checkpoint
@@ -428,7 +438,24 @@ def main(args):
             # random_test_prec_s = [tensor.item() for tensor in random_test_prec_s]
 
             meta_file = {'overfit': overfit,
+                        'seed': args.seed,
+                        'steps': args.steps,
+                        'aggregation': args.aggregation,
+                        'initialization': (
+                            'imagenet_joint'
+                            if args.skip_stage1
+                            else 'recognition_checkpoint'
+                        ),
                         'selector_view_limit': args.selector_view_limit,
+                        'active_single_view': args.active_single_view,
+                        'recognition_num_views': (
+                            1 if args.active_single_view else args.steps + 1
+                        ),
+                        'recognition_input': (
+                            'selected_view_only'
+                            if args.active_single_view
+                            else 'initial_plus_selected_views'
+                        ),
                         'accuracy': test_prec_s,
                         'per_class_acc': per_class_acc_list,
                         'expanded': longest_ratio_hist,
@@ -571,7 +598,9 @@ if __name__ == '__main__':
     
     parser.add_argument('--name', type=str, default='')
     parser.add_argument('--eval', action='store_true', help='evaluation only')
-    parser.add_argument('--arch', type=str, default='resnet18')
+    parser.add_argument('--arch', type=str, default='resnet18',
+                        choices=SUPPORTED_ARCHITECTURES,
+                        help='Image backbone. tinyvit uses timm TinyViT-5M/224.')
     parser.add_argument('--aggregation', type=str, default='max', choices=['mean', 'max'])
     parser.add_argument('-d', '--dataset', type=str, default='rgb',
                         choices=['rgb','depth', 'edge', 'rgb_depth', 'rgb_edge', 'depth_edge', 'rgb_depth_edge'])
@@ -600,6 +629,11 @@ if __name__ == '__main__':
     # MVSelect settings
     parser.add_argument('--steps', type=int, default=0,
                         help='number of camera views to choose. if 0, then no selection')
+    parser.add_argument(
+        '--active_single_view', action='store_true',
+        help='Active N=1 control. Requires --steps 1: the random initial view '
+             'conditions the selector, but only the newly selected view is '
+             'passed to the classifier and task-loss reward.')
     parser.add_argument('--selector_view_limit', type=str, default='all',
                         choices=['all', 'expanded_family',
                                  'foreshortened_family',
@@ -655,5 +689,8 @@ if __name__ == '__main__':
     parser.add_argument('--img_kernel_size', type=int, default=10)
 
     args = parser.parse_args()
+
+    if args.active_single_view and args.steps != 1:
+        parser.error('--active_single_view requires --steps 1')
 
     main(args)

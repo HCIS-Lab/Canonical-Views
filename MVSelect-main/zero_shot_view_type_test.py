@@ -11,7 +11,8 @@ mean ± std accuracy across runs. The checkpoint is auto-located via the same
 mechanism main.py uses for stage-2 training: it reads
 `logs/<dataset>/<arch>_performance.txt` and loads the path from the 2nd line.
 
-Outputs (under <output_dir>, default `logs/<dataset>/zero_shot_view_test/`):
+Outputs (under <output_dir>, default
+`logs/<dataset>/<arch>_zero_shot_view_test/`):
     bar_overall.png        — 5 bars (one per view type), mean ± std.
     per_class_heatmap.png  — view_type × class accuracy heatmap.
     per_class_grid.png     — small-multiples, one subplot per class.
@@ -38,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.datasets import ModelNet40, RGB_Depth_Edge_Dataset
 from src.models.mvcnn import MVCNN
+from src.models.architectures import SUPPORTED_ARCHITECTURES
 from src.trainer_mvcnn import ClassifierTrainer
 
 
@@ -66,7 +68,8 @@ def parse_args():
     p.add_argument("--dataset", type=str, default="rgb",
                    choices=["rgb", "depth", "edge", "rgb_depth", "rgb_edge",
                             "depth_edge", "rgb_depth_edge"])
-    p.add_argument("--arch", type=str, default="resnet18")
+    p.add_argument("--arch", type=str, default="resnet18",
+                   choices=SUPPORTED_ARCHITECTURES)
     p.add_argument("--aggregation", type=str, default="max")
     p.add_argument("--batch_size", type=int, default=6)
     p.add_argument("--num_workers", type=int, default=8)
@@ -87,7 +90,8 @@ def parse_args():
     p.add_argument("--n_runs", type=int, default=5,
                    help="Random-sample repeats per view type.")
     p.add_argument("--output_dir", type=str, default=None,
-                   help="Defaults to logs/<dataset>/zero_shot_view_test/.")
+                   help="Defaults to "
+                        "logs/<dataset>/<arch>_zero_shot_view_test/.")
     p.add_argument("--checkpoint", type=str, default=None,
                    help="Override the auto-located checkpoint with a direct path.")
     p.add_argument("--gpu_id", type=int, default=0)
@@ -144,7 +148,8 @@ def main():
 
     # --- Output dir ---
     freeze_tag = f"_freeze{args.freeze_epoch}" if args.freeze_epoch != 100 else ""
-    output_dir = args.output_dir or f"logs/{args.dataset}/zero_shot_view_test{freeze_tag}"
+    output_dir = args.output_dir or (
+        f"logs/{args.dataset}/{args.arch}_zero_shot_view_test{freeze_tag}")
     os.makedirs(output_dir, exist_ok=True)
     print(f"Output dir: {output_dir}")
 

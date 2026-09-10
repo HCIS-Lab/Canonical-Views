@@ -50,6 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.datasets import ModelNet40
 from src.models.mvcnn import MVCNN
+from src.models.architectures import ARCHITECTURE_CHOICES, resolve_architecture
 from src.trainer_mvcnn import aggregate_feat
 
 
@@ -65,7 +66,7 @@ def parse_args():
                    help="Final classifier .pth. If omitted, looks up via "
                         "logs/<dataset>/<arch>[_freeze<N>]_performance.txt.")
     p.add_argument("--dataset", default="rgb")
-    p.add_argument("--arch", default="resnet18")
+    p.add_argument("--arch", default="auto", choices=ARCHITECTURE_CHOICES)
     p.add_argument("--aggregation", default="max", choices=["mean", "max"])
     p.add_argument("--freeze_epoch", type=int, default=100,
                    help="Used only for performance.txt lookup. Ignored if --checkpoint set.")
@@ -247,8 +248,8 @@ def locate_final_checkpoint(args):
         f"Cannot find a stage-2 checkpoint for this experiment.\n"
         f"  Searched pattern: logs/{args.dataset}/{exp_basename}_<timestamp>/model.pth\n"
         f"\n"
-        f"Note: logs/<dataset>/<arch>_performance.txt points to the STAGE-1\n"
-        f"backbone, not the final stage-2 classifier you need here.\n"
+        f"Note: logs/<dataset>/<arch>_performance.txt may not identify the\n"
+        f"final classifier for this selector experiment.\n"
         f"\n"
         f"Contents of {logs_root}/:\n"
         f"{listing}\n"
@@ -443,6 +444,10 @@ def main():
     logdir_for_checkpoints = os.path.dirname(final_ckpt)
     print(f"Logdir: {logdir_for_checkpoints}")
 
+    final_state = torch.load(final_ckpt, map_location=device)
+    args.arch = resolve_architecture(
+        args.arch, args.selection_dir, final_state)
+    print(f"Architecture: {args.arch}")
     model = MVCNN(test_set, args.arch, args.aggregation, args.dataset).to(device)
 
     def load_state(path):

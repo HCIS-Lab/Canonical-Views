@@ -43,3 +43,4 @@ done
 # ./run_main.sh 5 0 main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 --dataset rgb --batch_size 6 --save_feature --skip_stage1 --lr 5e-4 --weight_decay 1e-3
 
 # ./run_main.sh 5 1 main.py --epochs 100 --non_roll --steps 5 --num_train_instances 25 --dataset rgb --batch_size 6 --save_feature --selector_view_limit foreshortened_family_remainder --skip_stage1 --lr 5e-4 --weight_decay 1e-3
+# ./run_main.sh 5 1 main.py --epochs 100 --non_roll --steps 1 --num_train_instances 25 --dataset rgb --batch_size 6 --save_feature --selector_view_limit foreshortened_family_remainder --skip_stage1 --lr 5e-4 --weight_decay 1e-3

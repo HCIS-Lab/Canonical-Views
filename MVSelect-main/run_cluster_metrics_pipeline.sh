@@ -11,6 +11,7 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${ROOT_DIR}/experiment_arch.sh"
 
 # ---------------------------------------------------------------------------
 # Comparison configuration — edit these
@@ -19,10 +20,10 @@ COMPARISON_SET="${COMPARISON_SET:-freeze}"  # freeze | selector_limit
 if [ -z "${COMPARISON_NAME:-}" ]; then
     case "${COMPARISON_SET}" in
         freeze)
-            COMPARISON_NAME="cluster_metrics_freeze_sweep"
+            COMPARISON_NAME="$(mvselect_arch_scoped_name cluster_metrics_freeze_sweep)"
             ;;
         selector_limit)
-            COMPARISON_NAME="cluster_metrics_selector_limit_sweep"
+            COMPARISON_NAME="$(mvselect_arch_scoped_name cluster_metrics_selector_limit_sweep)"
             ;;
         *)
             echo "ERROR: unknown COMPARISON_SET=${COMPARISON_SET}. Use freeze or selector_limit."
@@ -30,25 +31,13 @@ if [ -z "${COMPARISON_NAME:-}" ]; then
             ;;
     esac
 fi
+COMPARISON_NAME="$(mvselect_arch_scoped_name "${COMPARISON_NAME}")"
 DATASET="${DATASET:-rgb}"
 
 # Mirror the layout used by other aggregators: each entry resolves to
 # meta_logs/${DATASET}/<exp_folder>/.
-FREEZE_EXPS=(
-    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:no_freeze"
-    "freeze_10_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_10"
-    "freeze_20_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_20"
-    "freeze_30_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_30"
-    "freeze_40_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_40"
-    "freeze_50_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:freeze_50"
-)
-SELECTOR_LIMIT_EXPS=(
-    "resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_all"
-    "resnet18steps5_selview_expanded_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_expanded"
-    "resnet18steps5_selview_foreshortened_family_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened"
-    "resnet18steps5_selview_foreshortened_family_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_foreshortened_remainder"
-    "resnet18steps5_selview_remainder_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100:select_remainder"
-)
+FREEZE_EXPS=("${MVSELECT_FREEZE_EXPS[@]}")
+SELECTOR_LIMIT_EXPS=("${MVSELECT_SELECTOR_LIMIT_EXPS[@]}")
 case "${COMPARISON_SET}" in
     freeze)
         EXPS=("${FREEZE_EXPS[@]}")
@@ -61,7 +50,7 @@ esac
 # Compute-step knobs
 NUM_RUNS="${NUM_RUNS:-}"             # cap on runs aggregated per exp; empty = all
 MAX_SAMPLES="${MAX_SAMPLES:-2000}"    # downsample N for silhouette (O(n²) cost)
-FEATURE_DIM="${FEATURE_DIM:-512}"
+FEATURE_DIM="${FEATURE_DIM:-}"
 OVERWRITE="${OVERWRITE:-0}"          # 1 = recompute even if cluster_metrics.csv exists
 EVERY_N_EPOCHS="${EVERY_N_EPOCHS:-10}"  # only use epochs where epoch %% N == 0
                                         #   default 10 = matches the "I dumped every
@@ -91,6 +80,7 @@ echo "Cluster-metrics pipeline:"
 echo "  SET         = ${COMPARISON_SET}"
 echo "  COMPARISON  = ${COMPARISON_NAME}"
 echo "  DATASET     = ${DATASET}"
+echo "  ARCH        = ${ARCH}"
 echo "  MAX_SAMPLES = ${MAX_SAMPLES}"
 echo "  METRICS     = ${METRICS}"
 echo "  STYLE       = ${STYLE}"
@@ -109,11 +99,11 @@ compute_args=(
     --root "${ROOT_DIR}/meta_logs"
     --rep_list "${DATASET}"
     --max_samples "${MAX_SAMPLES}"
-    --feature_dim "${FEATURE_DIM}"
     --aggregation "${AGGREGATION}"
     --split "${SPLIT}"
     --test_per_cls_instances "${TEST_PER_CLS_INSTANCES}"
 )
+[ -n "${FEATURE_DIM}" ] && compute_args+=(--feature_dim "${FEATURE_DIM}")
 [ -n "${DATA_ROOT}" ] && compute_args+=(--data_root "${DATA_ROOT}")
 [ "${NON_ROLL}" = "1" ] && compute_args+=(--non_roll)
 [ "${NON_LIKE}" = "1" ] && compute_args+=(--non_like)

@@ -178,7 +178,17 @@ mix conceptually different manipulations.
 ```bash
 GPUS=4 MODELS="vggt dinov2" ./scripts/run_views_pipeline_sweep.sh
 COMPARISON_SET=selector_limit GPUS=4 MODELS="vggt dinov2" ./scripts/run_views_pipeline_sweep.sh
+
+# Evaluate selections produced by TinyViT MVSelect experiments
+ARCH=tinyvit GPUS=4 MODELS="vggt dinov2" \
+  ./scripts/run_views_pipeline_sweep.sh
 ```
+
+`ARCH` identifies the MVSelect backbone that produced the selections; it does
+not change VGGT or DINOv2. ResNet keeps the existing
+`results/views/v<VIEW_TYPE>/<label>/` layout. TinyViT is isolated under
+`results/views/v<VIEW_TYPE>/tinyvit/<label>/`, and its cross-experiment
+comparison folders append `_tinyvit`.
 
 Internally the wrapper runs the three steps in sequence:
 
@@ -328,11 +338,20 @@ cd human_multiview-main
 # Freeze sweep: no_freeze vs freeze_10..freeze_50
 ./scripts/run_views_pipeline_sweep.sh
 
+# The same sweep using TinyViT selector experiments
+ARCH=tinyvit ./scripts/run_views_pipeline_sweep.sh
+
 # Selector-limit sweep: select_all vs restricted selector policies
 COMPARISON_SET=selector_limit ./scripts/run_views_pipeline_sweep.sh
 
 # Smoke test on the first 10 trials per experiment
 LIMIT=10 ./scripts/run_views_pipeline_sweep.sh
+```
+
+Then aggregate the matching architecture:
+
+```bash
+ARCH=tinyvit STYLE=heatmap ./scripts/run_aggregate_vggt_confidence.sh
 ```
 
 Each experiment runs sequentially and uses all `GPUS` GPUs internally via
@@ -474,6 +493,9 @@ human_multiview-main/
 ```
 
 ---
+
+Publication-ready caption templates for the generated analysis figures are
+collected in [`../PAPER_FIGURE_CAPTIONS.md`](../PAPER_FIGURE_CAPTIONS.md).
 
 ## Citation
 

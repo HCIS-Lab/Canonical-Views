@@ -38,6 +38,11 @@ NUM_TRAIN_INSTANCES="${NUM_TRAIN_INSTANCES:-25}"
 MAX_EPOCHS="${MAX_EPOCHS:-}"
 COMPARISON_SET="${COMPARISON_SET:-all}"  # all | freeze | selector_limit
 PER_EPOCH_CHECKPOINT="${PER_EPOCH_CHECKPOINT:-0}"
+ARCH_FILTER="${ARCH:-all}"           # all | resnet18 | vit | tinyvit
+case "${ARCH_FILTER}" in
+    all|resnet18|vit|tinyvit) ;;
+    *) echo "ERROR: ARCH=${ARCH_FILTER}; use all, resnet18, vit, or tinyvit."; exit 1 ;;
+esac
 
 # Pass-through flags
 extra_flags=""
@@ -57,6 +62,7 @@ echo "  NON_LIKE  = ${NON_LIKE}"
 echo "  NUM_INS   = ${NUM_TRAIN_INSTANCES}"
 echo "  MAX_EPOCH = ${MAX_EPOCHS:-(all)}"
 echo "  SET       = ${COMPARISON_SET}"
+echo "  ARCH      = ${ARCH_FILTER}"
 echo "  PROTOCOL  = $([ "${PER_EPOCH_CHECKPOINT}" = "1" ] && echo 'classifier-at-epoch-t (--per_epoch_checkpoint)' || echo 'final classifier (fixed)')"
 echo "=========================================="
 
@@ -87,33 +93,24 @@ parse_arch() {
 
 should_include_exp() {
     local name="$1"
+    local parsed_arch
+    parsed_arch="$(parse_arch "${name}")"
+    if [ "${ARCH_FILTER}" != "all" ] && [ "${parsed_arch}" != "${ARCH_FILTER}" ]; then
+        return 1
+    fi
+    local base="${parsed_arch}steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100"
     case "${COMPARISON_SET}" in
         all)
             return 0
             ;;
         freeze)
-            case "${name}" in
-                resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                freeze_10_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                freeze_20_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                freeze_30_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                freeze_40_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                freeze_50_resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100)
-                    return 0
-                    ;;
-            esac
+            [ "${name}" = "${base}" ] && return 0
+            [[ "${name}" =~ ^freeze_(10|20|30|40|50)_${base}$ ]] && return 0
             return 1
             ;;
         selector_limit)
-            case "${name}" in
-                resnet18steps5_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100|\
-                *selview_expanded_family_train*|\
-                *selview_foreshortened_family_train*|\
-                *selview_foreshortened_family_remainder_train*|\
-                *selview_remainder_train*)
-                    return 0
-                    ;;
-            esac
+            [ "${name}" = "${base}" ] && return 0
+            [[ "${name}" == "${parsed_arch}steps5_selview_"*"_train_ins25_lr0.0005base1.0other1.0select_wd0.0001select0.0001_e100" ]] && return 0
             return 1
             ;;
         *)

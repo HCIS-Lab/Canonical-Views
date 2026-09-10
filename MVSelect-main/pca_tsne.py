@@ -55,8 +55,9 @@ def parse_args():
                    help="If <32, only plots samples whose class_idx < this number.")
     p.add_argument("--num_runs", type=int, default=None,
                    help="Cap on runs aggregated per experiment. None = all.")
-    p.add_argument("--feature_dim", type=int, default=512,
-                   help="Per-view feature dim used when reshaping the saved array.")
+    p.add_argument("--feature_dim", type=int, default=None,
+                   help="Optional feature-width validation. Default: infer from "
+                        "the NPZ, allowing mixed ResNet/ViT/TinyViT experiments.")
     p.add_argument("--pca_dim", type=int, default=50,
                    help="Intermediate PCA dim before t-SNE.")
     p.add_argument("--perplexity", type=float, default=30.0)
@@ -80,8 +81,18 @@ def discover_epochs(run_dir):
 
 def load_features(path, feature_dim):
     data = np.load(path)
-    features = data["features"].squeeze().reshape(-1, feature_dim)
-    return features, data["view_index"], data["view_type"], data["view_class"]
+    view_index = np.asarray(data["view_index"])
+    n_rows = int(view_index.size)
+    values = np.asarray(data["features"])
+    if n_rows <= 0 or values.size % n_rows:
+        raise ValueError(
+            f"Cannot infer feature width from {values.shape} and {n_rows} labels")
+    inferred_dim = values.size // n_rows
+    if feature_dim is not None and inferred_dim != feature_dim:
+        raise ValueError(
+            f"NPZ feature width {inferred_dim} != --feature_dim {feature_dim}")
+    features = values.reshape(n_rows, inferred_dim)
+    return features, view_index, data["view_type"], data["view_class"]
 
 
 def compute_tsne(features, pca_dim=50, perplexity=30.0):
