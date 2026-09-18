@@ -73,7 +73,13 @@ def load_or_create_list(filepath='pose_table.pkl', non_roll=False):
 def load_pose_list(filepath='non_like_pose_table.json'):
     with open(filepath) as f:
         pose_dict = json.load(f)
+    return pose_list_from_mapping(pose_dict)
+
+
+def pose_list_from_mapping(pose_dict):
     N = len(pose_dict)
+    if set(pose_dict.values()) != set(range(N)):
+        raise ValueError('Camera indices must cover 0 to N-1 exactly.')
     pose_list = [None] * N
     for s, idx in pose_dict.items():
         deg = s.split('_')
@@ -102,7 +108,7 @@ def plot(logdir, acc_history, sel_counts_total, sel_counts_hist, total_selected_
         longest_ratio_hist, short_ratio_hist, longest_like_ratio_hist, short_like_ratio_hist,\
         longest_count_hist, short_count_hist, longest_like_count_hist, short_like_count_hist, \
         eye_deg_bar_hist, inplane_deg_bar_hist, \
-        epochs, steps=2, non_roll=False, non_like=False):
+        epochs, steps=2, non_roll=False, non_like=False, pose_mapping=None):
     
     # Color-blind friendly palette (Okabe–Ito)
     colors = {
@@ -122,7 +128,10 @@ def plot(logdir, acc_history, sel_counts_total, sel_counts_hist, total_selected_
     elif not non_roll and not non_like:
         tabel_path = 'pose_table.json'
 
-    pose_table = load_pose_list(tabel_path)
+    pose_table = (pose_list_from_mapping(pose_mapping) if pose_mapping is not None
+                  else load_pose_list(tabel_path))
+    if len(pose_table) != len(sel_counts_total):
+        raise ValueError('Camera mapping and selection-count lengths differ.')
 
     #Accuracy over episodes
     x = range(1, len(acc_history)+1)

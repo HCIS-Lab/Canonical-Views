@@ -20,6 +20,7 @@ from src.models.mvcnn import MVCNN
 from src.models.architectures import SUPPORTED_ARCHITECTURES
 from src.utils.logger import Logger
 from src.utils.draw_curve import draw_curve, plot
+from src.utils.experiment_records import append_epoch_record, plot_after_records
 from src.utils.str2bool import str2bool
 from src.trainer import PerspectiveTrainer, find_dataset_lvl_strategy
 from src.trainer_mvcnn import ClassifierTrainer
@@ -123,7 +124,7 @@ def main(args):
     N = train_set.num_cam
 
     # logging
-    select_settings = f'steps{args.steps}_'
+    select_settings = f'steps{args.steps}_' + ('tdlegal_' if args.steps and args.td_target_mode == 'legal' else '')
     active_single_settings = 'active_single_' if args.active_single_view else ''
     selector_view_settings = (
         f'selview_{args.selector_view_limit}_'
@@ -208,6 +209,9 @@ def main(args):
         pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
         model_dict.update(pretrained_dict)
         model.load_state_dict(model_dict)
+
+    if args.paper_record_initial:
+        torch.save(model.state_dict(), os.path.join(logdir, 'model_e0.pth'))
 
     param_dicts = [{"params": [p for n, p in model.named_parameters()
                                if 'base' not in n and 'select' not in n and p.requires_grad],
@@ -374,6 +378,30 @@ def main(args):
 
 
 
+            # Save full-precision measurements before diagnostic figure code.
+            if args.steps:
+                record = {
+                    'epoch': epoch, 'seed': args.seed, 'td_target_mode': args.td_target_mode,
+                    'train_loss': train_loss, 'train_accuracy_pct': train_prec,
+                    'policy_loss': test_loss, 'policy_accuracy_pct': test_prec[0],
+                    'all_views_accuracy_pct': all_views_test_prec[0],
+                    'random_accuracy_pct': random_test_prec[0],
+                    'per_class_accuracy': per_class_acc,
+                    'selected_counts': {
+                        'expanded': meta['longest'], 'expanded_like': meta['longest_like'],
+                        'foreshortened': meta['short'], 'foreshortened_like': meta['short_like'],
+                    },
+                    'total_selected': total_sel_ep,
+                    'selection_counts_by_camera': selection,
+                }
+                for label, history in [
+                    ('expanded', expanded_test_prec_s), ('expanded_like', expanded_like_test_prec_s),
+                    ('foreshortened', foreshortened_test_prec_s), ('foreshortened_like', foreshortened_like_test_prec_s),
+                    ('remainder', remainder_test_prec_s),
+                ]:
+                    record[label + '_single_image_accuracy_pct'] = history[-1]
+                append_epoch_record(os.path.join(logdir, 'paper_epoch_metrics.jsonl'), record)
+
             draw_curve(os.path.join(logdir, 'learning_curve.jpg'), x_epoch, train_loss_s, test_loss_s,
                        train_prec_s, test_prec_s)
             # Save weights every epoch (overwrites). After training completes
@@ -389,11 +417,9 @@ def main(args):
             with open(os.path.join(meta_log, str(exp_name)+'_selection.json'), 'w') as f:
                 json.dump(total_select_json, f, indent=4)
 
-        remainder_ratio_hist = plot(logdir, test_prec_s, sel_counts_total.cpu(), sel_counts_hist, total_selected_hist, \
-        longest_ratio_hist, short_ratio_hist, longest_like_ratio_hist, short_like_ratio_hist, \
-        longest_count_hist, short_count_hist, longest_like_count_hist, short_like_count_hist, \
-        eye_deg_bar_hist, inplane_deg_bar_hist, \
-        args.epochs, args.steps, non_roll=args.non_roll, non_like=args.non_like)
+        remainder_ratio_hist = [1.0 - a - b - (c + d if not args.non_like else 0.0)
+                                for a, b, c, d in zip(longest_ratio_hist, short_ratio_hist,
+                                                     longest_like_ratio_hist, short_like_ratio_hist)]
 
         if args.steps:
             best_epoch = np.argmax(test_prec_s)
@@ -439,6 +465,7 @@ def main(args):
 
             meta_file = {'overfit': overfit,
                         'seed': args.seed,
+                        'td_target_mode': args.td_target_mode,
                         'steps': args.steps,
                         'aggregation': args.aggregation,
                         'initialization': (
@@ -501,6 +528,16 @@ def main(args):
 
             with open(meta_log_file_path, "w") as f:
                 json.dump(meta_file, f)
+
+        plot_after_records(
+            plot, os.path.join(logdir, 'plot_error.txt'),
+            logdir, test_prec_s, sel_counts_total.cpu(), sel_counts_hist, total_selected_hist,
+            longest_ratio_hist, short_ratio_hist, longest_like_ratio_hist, short_like_ratio_hist,
+            longest_count_hist, short_count_hist, longest_like_count_hist, short_like_count_hist,
+            eye_deg_bar_hist, inplane_deg_bar_hist, args.epochs, args.steps,
+            non_roll=args.non_roll, non_like=args.non_like,
+            pose_mapping=getattr(test_set, 'pose_table', None),
+        )
 
 
     def log_best2cam_strategy(result_type=('prec',), max_steps=2):
@@ -666,6 +703,10 @@ if __name__ == '__main__':
     parser.add_argument('--freeze_backbone', action='store_true')
 
 
+    parser.add_argument('--td_target_mode', choices=['legal', 'legacy'], default='legal',
+                        help='Future credit from legal next cameras; legacy reproduces the old unmasked target.')
+    parser.add_argument('--paper_record_initial', action='store_true',
+                        help='Save model_e0.pth before any task training.')
     parser.add_argument('--gamma', type=float, default=0.99, help='reward discount factor (default: 0.99)')
     parser.add_argument('--down', type=int, default=1, help='down sample the image to 1/N size')
     parser.add_argument('--all_cameras', action='store_true', help='evaluation only')

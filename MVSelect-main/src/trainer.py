@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from PIL import Image
 from src.loss import *
+from paper_td_target import next_action_value
 from src.evaluation.evaluate import evaluate, evaluateDetection_py
 from src.utils.decode import ctdet_decode, mvdet_decode
 from src.utils.nms import nms
@@ -60,7 +61,8 @@ class BaseTrainer(object):
                     # TD update
                     with torch.no_grad():
                         _, (_, next_value, _, _) = self.target_model(feat, init_prob + action, keep_cams)
-                        next_value = next_value.max(dim=1)[0] * (1 - done)
+                        next_value = next_action_value(next_value, init_prob + action, keep_cams, done,
+                                                       getattr(self.args, 'td_target_mode', 'legal'))
                     # record state & transitions
                     log_probs.append(log_prob)
                     values.append((value * action).sum(1))
@@ -114,7 +116,8 @@ class BaseTrainer(object):
                 # TD update
                 with torch.no_grad():
                     _, (_, next_value, _, _) = self.target_model(feat, init_prob + action, keep_cams)
-                    next_value = next_value.max(dim=1)[0] * (1 - done)
+                    next_value = next_action_value(next_value, init_prob + action, keep_cams, done,
+                                                       getattr(self.args, 'td_target_mode', 'legal'))
                 # record state & transitions
                 log_probs.append(log_prob)
                 values.append((value * action).sum(1))

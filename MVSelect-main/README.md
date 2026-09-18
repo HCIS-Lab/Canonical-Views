@@ -266,28 +266,85 @@ an instance, the trainer prints a warning and falls back to the original
 
 ### Aggregated meta-log visualizations
 
-`aggregate_meta_json.py` walks `meta_logs/<rep>/<exp>/*_meta.json`, averages
-the per-epoch curves across runs, and writes the following per-experiment
-plots into each experiment folder:
+`aggregate_meta_json.py` preserves the existing no-argument traversal of
+`meta_logs/{rgb,depth,edge}/<exp>/*_meta.json`. Missing representation folders are
+reported and skipped. You can also pass `--experiment-dir` directly, without
+requiring an architecture prefix in that folder's name. Selection plots use
+accessible colours and distinct line styles, with one legend entry per curve.
+Dotted lines show candidate availability; they are not classification chance.
 
 | File | What it shows |
 |---|---|
-| `aggregated_view_ratios.png` | Five exact view-type selection-share curves (Expanded / Expanded-like / Foreshortened / Foreshortened-like / Remainder), with each type's availability baseline in the legend and ±SEM shaded across runs. |
-| `aggregated_view_family_ratios.png` | Collapsed family view: `expanded family = Expanded + Expanded-like` (green) vs `foreshortened family = Foreshortened + Foreshortened-like` (red), with each family's availability baseline in the legend, ±SEM shaded across runs, and a vertical line marking the first epoch where expanded-family share exceeds foreshortened-family share. The combined baselines are 17.5%, 8.7%, and 73.8% for expanded family, foreshortened family, and remainder. |
-| `aggregated_view_family_lift.png` | **NEW**. Same collapsed family comparison plotted as **lift over chance** (`observed_share / available_share`). Horizontal reference at `1.0` = uniform random. Magnitude-aware view of preference strength independent of bucket sizes. |
-| `aggregated_per_class_accuracy.png` | **RESTYLED**. Per-class accuracy over epochs as a `class × epoch` viridis heatmap (was: 32 overlapping line curves). Much easier to spot which classes the agent is learning earliest. |
-| `aggregated_accuracy.png`, `_3.png`, `_5.png` | Per-view-type accuracies for N=1/3/5 view sets (unchanged). |
-| `aggregated_summary.json` | Adds a `view_family` block: bucket priors, mean expanded/foreshortened/remainder family curves, lift curves, and the crossing epoch. |
-| `pca_tsne/` (subfolder) | Per-epoch t-SNE plots produced by `pca_tsne.py` (see below). Two PNGs per epoch: one colored by view type, one colored by class. |
+| `aggregated_view_ratios.png` | All five subtype trajectories and availability baselines. |
+| `aggregated_view_family_ratios.png` | Expanded family, foreshortened family and remainder. Subtypes are summed within each run before means and SEM are computed. |
+| `aggregated_view_family_lift.png` | Enrichment relative to candidate availability; the historical filename is retained. A reference at 1 means selected share equals candidate share. |
+| `aggregated_view_trajectories.png` | Two panels showing family trajectories and all five subtypes together. |
+| Matching `.pdf` and `.svg` files | Vector exports of all four selection displays. |
+| `selection_plot_data.json` | Compact full per-file subtype curves, means, SEM, file hashes, available metadata, exclusions, original lengths, truncated files, priors and plotted epoch indices. Send one file per condition; full metadata archives are unnecessary for reviewing these curves. |
+| `aggregated_summary.json` | Existing legacy metrics and means, plus subtype/family SEM and explicit reporting metadata. Written by the full aggregation mode. |
+| `aggregated_accuracy.png`, `_3.png`, `_5.png` | Existing accuracy comparisons; missing policy input counts are labelled as unrecorded rather than guessed. |
+| `aggregated_per_class_accuracy.png` | Object-category accuracy heatmap. |
 
-The bucket priors are baked into `BUCKET_PRIOR` at the top of the file (the
-dataset's per-object availability shares). Adjust if you re-generate the
-ModelNet renders with a different sphere-of-views.
+**Uncertainty and inclusion.** Selection curves are unsmoothed. SEM is computed
+across included files, which must be audited as independent training runs. With
+one file, SEM is unavailable (`null`) and no uncertainty band is drawn. Summaries
+use the shortest common selection prefix; full original curves remain in the
+compact JSON. Exclusions and truncation are reported. Full aggregation retains
+the legacy requirement for `per_class_acc` and `expanded_accuracy_5`; it also
+checks the remaining accuracy fields before aggregating them. Accuracy comparisons
+use the common prefix across all three accuracy grids to avoid ragged arrays.
+
+**Candidate denominators.** Default subtype priors remain the historical
+constants (0.035, 0.14, 0.017, 0.07, 0.738), explicitly labelled as requiring
+verification. They are not re-estimated from selected shares. Supply a JSON with
+exactly the keys `expanded`, `Expanded-like`, `Foreshortened`,
+`Foreshortened-like`, `Remainder` and verified candidate fractions using
+`--candidate-priors`. Use denominators appropriate to the actual candidate pool.
+The raw expanded-versus-foreshortened share crossing is no longer drawn: the two
+families have different availability. The old crossing field is retained in the
+summary for compatibility and explicitly marked as not a bias-onset measure.
+
+**Epoch convention.** The default axis preserves the original zero-based indices
+and says so. Set `--epoch-start 1` only after confirming index 0 represents
+training epoch 1. This affects display labels; legacy onset fields remain indices.
 
 ```bash
 cd MVSelect-main
-python3 aggregate_meta_json.py    # walks meta_logs/{rgb,depth,edge}/<exp>/
+python3 aggregate_meta_json.py
+python3 aggregate_meta_json.py --experiment-dir /path/to/multiview/experiment
+# Explicitly permit single-view or older logs containing valid selection arrays
+# without the legacy accuracy fields. This changes inclusion; record that choice.
+python3 aggregate_meta_json.py --experiment-dir /path/to/singleview/experiment --selection-only
+# Optional verified availability and epoch origin:
+python3 aggregate_meta_json.py --experiment-dir /path/to/experiment --candidate-priors /path/to/candidate_priors.json --epoch-start 1
 ```
+
+To export only the compact data without plotting (Python standard library only):
+
+```bash
+python3 export_selection_plot_data.py /path/to/experiment --output /path/to/selection_export.json
+# Optional explicit inclusion change for selection-only logs:
+python3 export_selection_plot_data.py /path/to/experiment --output /path/to/singleview_export.json --inclusion selection
+```
+
+The exporter refuses to overwrite an existing output. Both modes reject invalid
+fractions or five-subtype shares that do not sum to one within rounding tolerance.
+Do not silently compare results from different inclusion rules.
+
+For the descriptor distribution, `plot_feature_pairs.py` replaces overlapping 3D
+views with three pairwise projections of the existing points table. It preserves
+all finite rows, reports exclusions and requires an explicit context label:
+
+```bash
+python3 plot_feature_pairs.py --input /path/to/all_test_views_midlevel_3d_points.csv --output /path/to/feature_pairs --context 'test subset; run ID; source epoch; initial camera'
+python3 -m unittest test_selection_plotting
+```
+
+Dependencies: NumPy and Matplotlib for aggregation; pandas additionally for the
+pairwise descriptor plot. These utilities do not train models or modify source
+metadata. Updating the local checkout does not itself update a remote server;
+transfer the changed files together, including `selection_plotting.py` and
+`export_selection_plot_data.py` used by the aggregator.
 
 ### Per-experiment t-SNE of features (`pca_tsne.py`)
 
@@ -1110,3 +1167,13 @@ collide, e.g.:
 
 See `human_multiview-main/README.md` for the probe scripts that consume the
 `selection.json` files produced by step 2.
+
+
+## Paper verification update — 13 September 2026
+
+See [the current paper action guide](README_paper_actions.md) for the exact E01 training,
+E03 equal-image-count evaluation and E12 seven-checkpoint extension commands,
+and the files to return. E04 is local analysis; no author command is needed.
+GPU troubleshooting and CLIP inference are complete. Older runbooks are superseded. New training defaults to `--td_target_mode legal`
+and uses `tdlegal` in output names. Use `--td_target_mode legacy` only for the
+explicit comparison with the historical target. Existing checkpoints are unchanged.
